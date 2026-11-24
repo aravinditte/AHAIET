@@ -10,6 +10,7 @@ from app.schemas.models import (TranslateRequest, OcrRequest, ProcessRequest,
 from app.services.preprocessing.service import validate_and_decode
 from app.services.ocr.service import ocr_status, run_ocr
 from app.services.translation.service import translate as do_translate, load_models_manifest
+from app.services.translation import model_artifacts, selection as model_selection
 from app.services.language.service import suggest_language, SUPPORTED, FUTURE
 from app.services import retrieval, morphology
 from app.storage import db as store
@@ -42,9 +43,10 @@ def capabilities(request: Request):
         import cv2; opencv = True
     except Exception:
         opencv = False
-    models = load_models_manifest(s).get("models", [])
-    any_translation = any(m.get("status") == "provisioned" and m.get("kind") == "translation" for m in models)
     corpus = retrieval.status(s.db_path)
+    counts = retrieval.corpus_counts(s.db_path)
+    per_profile = model_selection.per_profile_readiness(s, counts.get("by_language", {}))
+    any_model = any(p["engine"] for p in per_profile.values())
     return {
         "db_ok": store.db_ok(s.db_path),
         "upload": {"status": "available", "max_bytes": s.upload_max_bytes, "max_pixels": s.upload_max_pixels,
@@ -55,9 +57,10 @@ def capabilities(request: Request):
         "ocr": ocr,
         "corpus": corpus,
         "morphology": morphology.status(s.db_path),
-        "translation": {"status": "available" if (any_translation or corpus["status"] == "available") else "unavailable",
+        "translation": {"status": "available" if (any_model or corpus["status"] == "available") else "unavailable",
                         "verified_reference": corpus["status"] == "available",
-                        "reason": None if (any_translation or corpus["status"] == "available") else
+                        "per_profile": per_profile,
+                        "reason": None if (any_model or corpus["status"] == "available") else
                         "No corpus imported and no translation model artifact is provisioned (see artifacts/manifests/models.json)."},
         "languages": SUPPORTED,
     }
@@ -73,7 +76,16 @@ def languages():
 @router.get("/models")
 def models(request: Request):
     s = _settings(request)
-    return load_models_manifest(s)
+    manifest = load_models_manifest(s)
+    enriched = []
+    for entry in manifest.get("models", []):
+        item = dict(entry)
+        if entry.get("kind") == "translation":
+            # Live artifact state, derived from the disk and the model
+            # card — the manifest alone never proves readiness.
+            item.update(model_artifacts.resolve_entry(entry).summary())
+        enriched.append(item)
+    return {**manifest, "models": enriched}
 
 @router.post("/uploads")
 async def upload(request: Request, file: UploadFile = File(...)):
@@ -131,16 +143,24 @@ def translate(request: Request, body: TranslateRequest):
         raise
     sug = suggest_language(text, body.source_language)
     warnings.extend(sug["warnings"])
+    warnings.extend(result.get("warnings", []))
     if result.get("variant_candidate"):
         warnings.append(result["variant_candidate"]["warning"])
+    model_versions = {"translation": result["model"].get("id")}
+    if result.get("model_version"):
+        model_versions["model_version"] = result["model_version"]
+    if result.get("evaluation_state"):
+        model_versions["evaluation_state"] = result["evaluation_state"]
     resp = TranslationResponse(
         request_id=uuid.uuid4().hex, status="completed",
         detected_language=result.get("matched_language") or sug["suggestion"],
         selected_language=body.source_language, script="Hebrew",
         original_ocr_text=body.text, corrected_source_text=text,
         english_translation=result["english_translation"], translation_method=result["translation_method"],
+        engine=result.get("engine"), model_version=result.get("model_version"),
+        artifact_sha256=result.get("artifact_sha256"), coverage=result.get("coverage"),
         source_references=result.get("source_references", []),
-        warnings=warnings, model_versions={"translation": result["model"].get("id")},
+        warnings=warnings, model_versions=model_versions,
         processing_time_ms=int((time.time() - start) * 1000))
     return resp.model_dump()
 

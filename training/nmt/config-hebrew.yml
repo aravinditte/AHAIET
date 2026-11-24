@@ -1,0 +1,56 @@
+# Marian NMT training configuration — Biblical Hebrew -> English (CPU).
+#
+# This file is a template: training/nmt/train_nmt.py substitutes the
+# {{PLACEHOLDERS}} with real paths from the prepared dataset and writes
+# the runnable copy into training/nmt/work/hebrew/config.yml. Do not run
+# Marian against this template directly.
+#
+# Vocabulary: ONE joint SentencePiece model trained on the concatenated
+# source+target training text (see train_nmt.py). With a corpus this
+# small, a joint subword vocabulary keeps proper names and numbers
+# shared between the sides and halves the vocabulary parameters; the
+# same .spm file is therefore listed for both vocabs.
+#
+# Model size is deliberately small: the Hebrew training split is a few
+# hundred verse pairs, so a large transformer would only memorise.
+# CPU-only: no devices key means Marian's CPU build trains on CPU.
+
+type: transformer
+model: {{MODEL_PATH}}
+vocabs:
+  - {{VOCAB_SPM}}
+  - {{VOCAB_SPM}}
+train-sets:
+  - {{TRAIN_SRC}}
+  - {{TRAIN_TGT}}
+valid-sets:
+  - {{VALID_SRC}}
+  - {{VALID_TGT}}
+valid-metrics:
+  - cross-entropy
+  - perplexity
+  - bleu
+valid-mini-batch: 16
+dim-vocab: {{VOCAB_SIZE}}
+dim-emb: 256
+dim-model: 256
+enc-type: transformer
+enc-depth: 3
+dec-depth: 3
+transformer-heads: 4
+transformer-dim-ffn: 512
+transformer-dropout: 0.1
+dropout: 0.1
+label-smoothing: 0.1
+mini-batch: 16
+maxi-batch: 100
+max-length: 120
+early-stopping: 10
+valid-freq: 100
+save-freq: 100
+disp-freq: 20
+seed: {{SEED}}
+workspace: 1024
+cpu-threads: 0
+log: {{LOG_PATH}}
+{{PRETRAINED_LINE}}

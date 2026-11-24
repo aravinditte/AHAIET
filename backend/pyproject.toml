@@ -10,6 +10,10 @@ dependencies = ["fastapi>=0.110", "uvicorn>=0.29", "pydantic>=2.6", "python-mult
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "httpx>=0.27"]
 opencv = ["opencv-python>=4.9"]
+# Training/evaluation tooling only (dataset preparation is stdlib-only;
+# these serve the evaluation harness and Marian vocabulary training).
+# The backend runtime never imports them.
+training = ["sacrebleu>=2.4", "sentencepiece>=0.2"]
 [tool.setuptools.packages.find]
 include = ["app*"]
 [tool.pytest.ini_options]

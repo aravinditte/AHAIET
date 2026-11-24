@@ -22,12 +22,20 @@ export interface Capabilities {
   ocr: { status: string; tesseract: { available: boolean; path: string | null; traineddata: { lang: string; available: boolean; prefix: string | null }; reason: string | null }; kraken: { available: boolean; reason: string | null } };
   corpus: { status: string; passages: number; by_language: Record<string, number>; words: number; reason: string | null };
   morphology: { status: string; reason: string | null };
-  translation: { status: string; verified_reference: boolean; reason: string | null };
+  translation: { status: string; verified_reference: boolean; reason: string | null;
+    per_profile?: Record<string, { status: string; verified_reference: boolean; engine: string | null;
+      evaluation_state: string | null; model_version: string | null }> };
   languages: string[];
+}
+export interface CoverageInfo {
+  source_tokens: number; known_tokens: number; coverage_ratio: number; oov_words: string[];
 }
 export interface TranslationResult {
   request_id: string; status: string; detected_language: string | null; selected_language: string | null;
   script: string | null; original_ocr_text: string | null; corrected_source_text: string | null;
   english_translation: string | null; translation_method: string | null; source_references: SourceReference[];
   uncertain_spans: unknown[]; warnings: string[]; model_versions: Record<string, unknown>; processing_time_ms: number;
+  // Additive fields, populated when a trained local model produced the output.
+  engine: string | null; model_version: string | null; artifact_sha256: string | null;
+  coverage: CoverageInfo | null;
 }

@@ -14,6 +14,21 @@ export function TranslationPanel({ result }: { result: TranslationResult | null 
         <p className="mt-2 text-sm">Method: <strong>{result.translation_method}</strong>
           {result.translation_method === "verified_reference" ? " — the English below is the cited edition's text for the matched passage, not a generated paraphrase." : ""}</p>
       )}
+      {result && (result.translation_method === "moses" || result.translation_method === "marian") && (
+        <p className="mt-2 text-sm" aria-label="Model details">
+          Engine: <strong>{result.engine ?? result.translation_method}</strong>
+          {result.model_version ? <> · model version: {result.model_version}</> : null}
+          {result.artifact_sha256 ? <> · artifact sha256: {result.artifact_sha256.slice(0, 12)}…</> : null}
+          {typeof result.model_versions?.evaluation_state === "string"
+            ? <> · evaluation state: {result.model_versions.evaluation_state}</> : null}
+          {result.coverage
+            ? <> · source-token coverage: {Math.round(result.coverage.coverage_ratio * 100)}%
+                ({result.coverage.known_tokens}/{result.coverage.source_tokens} tokens;
+                out-of-vocabulary: {result.coverage.oov_words.length
+                  ? result.coverage.oov_words.join(", ") : "none"})</>
+            : null}
+        </p>
+      )}
       {refs.length > 0 && (
         <div className="mt-2 rounded border p-2 text-sm" aria-label="Source references">
           <h3 className="font-medium">Source references</h3>

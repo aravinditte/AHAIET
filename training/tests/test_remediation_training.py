@@ -80,26 +80,82 @@ def test_fallback_metric_is_chrf_not_chrf_pp():
     assert "fallback" in sig
 
 
-def test_selection_requires_comparable_runs(tmp_path):
-    # Two evaluated engines whose runs used DIFFERENT test sets:
-    # selection must refuse rather than compare unlike scores.
+def _report_with_runs(moses_run_sha, marian_run_sha, tmp_path):
     from app.core.config import Settings
     settings = Settings(storage_dir=tmp_path / "up", db_path=tmp_path / "t.db",
                         models_manifest=tmp_path / "models.json")
-    (tmp_path / "models.json").write_text(json.dumps({"models": []}), encoding="utf-8")
+    (tmp_path / "models.json").write_text(json.dumps({"models": [
+        {"id": "moses-x", "kind": "translation", "engine": "moses",
+         "language_profile": "biblical_hebrew", "status": "provisioned", "path": None},
+        {"id": "marian-x", "kind": "translation", "engine": "marian",
+         "language_profile": "biblical_hebrew", "status": "provisioned", "path": None},
+    ]}), encoding="utf-8")
     report = {
-        "profile": "biblical_hebrew", "status": "evaluated", "date": "2026-01-01",
+        "run_id": "run-test", "profile": "biblical_hebrew", "status": "evaluated",
+        "date": "2026-01-01", "metric_implementation": "sacrebleu-test",
         "test_pairs": 50, "test_set_sha256": "a" * 64, "metric_signature": "sig-1",
         "engines": {
-            "moses": {"status": "evaluated", "metrics": {"chrf_pp": 50.0},
-                      "evaluation_run": {"test_set_sha256": "a" * 64,
+            "moses": {"status": "evaluated",
+                      "metrics": {"chrf_pp": 50.0, "sacrebleu": 10.0},
+                      "evaluation_run": {"test_set_sha256": moses_run_sha,
                                          "metric_signature": "sig-1"}},
-            "marian": {"status": "evaluated", "metrics": {"chrf_pp": 60.0},
-                       "evaluation_run": {"test_set_sha256": "b" * 64,
+            "marian": {"status": "evaluated",
+                       "metrics": {"chrf_pp": 60.0, "sacrebleu": 12.0},
+                       "evaluation_run": {"test_set_sha256": marian_run_sha,
                                           "metric_signature": "sig-1"}},
         },
     }
-    assert evaluate_translation.write_selection(report, settings) is None
+    return settings, report
+
+
+def test_selection_single_qualified_engine_labelled(tmp_path):
+    # NEW-04 policy: Moses qualifies on this run's signature, Marian's
+    # run used a DIFFERENT test set and does not qualify. The single
+    # qualifying engine MAY be selected, but the record must say
+    # selection_basis="single_evaluated_engine", comparable=False —
+    # never a head-to-head claim.
+    settings, report = _report_with_runs("a" * 64, "b" * 64, tmp_path)
+    record = evaluate_translation.write_selection(report, settings)
+    assert record is not None
+    assert record["winner"] == "moses"
+    assert record["selection_basis"] == "single_evaluated_engine"
+    assert record["comparable"] is False
+    manifest = json.loads((tmp_path / "models.json").read_text(encoding="utf-8"))
+    winner = next(e for e in manifest["models"] if e["engine"] == "moses")
+    assert winner["selection"]["selection_basis"] == "single_evaluated_engine"
+    assert winner["selection"]["comparable"] is False
+
+
+def test_selection_one_qualified_one_stale_competitor(tmp_path):
+    # Follow-up case: one qualified engine + one competitor whose
+    # recorded metrics are from an older run. The stale competitor's
+    # metrics are archived as stale (NEW-14) and cannot win.
+    settings, report = _report_with_runs("a" * 64, "b" * 64, tmp_path)
+    manifest = json.loads((tmp_path / "models.json").read_text(encoding="utf-8"))
+    marian = next(e for e in manifest["models"] if e["engine"] == "marian")
+    marian["evaluation"] = {"chrf_pp": 99.0, "date": "2025-01-01",
+                            "run": {"test_set_sha256": "b" * 64,
+                                    "metric_signature": "sig-1"}}
+    (tmp_path / "models.json").write_text(json.dumps(manifest), encoding="utf-8")
+    record = evaluate_translation.write_selection(report, settings)
+    assert record["winner"] == "moses"
+    manifest = json.loads((tmp_path / "models.json").read_text(encoding="utf-8"))
+    marian = next(e for e in manifest["models"] if e["engine"] == "marian")
+    assert "evaluation" not in marian
+    assert marian["metrics_history"][-1]["status"] == "stale"
+    assert marian["metrics_history"][-1]["chrf_pp"] == 99.0
+
+
+def test_selection_head_to_head_when_two_share_signature(tmp_path):
+    # Follow-up case: two engines evaluated on the SAME split and
+    # signature — a genuine head-to-head; the higher score wins and
+    # the record says so.
+    settings, report = _report_with_runs("a" * 64, "a" * 64, tmp_path)
+    record = evaluate_translation.write_selection(report, settings)
+    assert record is not None
+    assert record["winner"] == "marian"  # 60.0 > 50.0 on the same run
+    assert record["selection_basis"] == "head_to_head"
+    assert record["comparable"] is True
 
 
 def test_clean_corpus_misalignment_fails(tmp_path):
@@ -146,3 +202,66 @@ def test_marian_checkpoint_selection_uses_best_evidence(tmp_path):
     (tmp_path / "model.npz").write_bytes(b"final")
     chosen, evidence = _select_checkpoint(tmp_path)
     assert "best" in evidence or chosen.name == "model.npz"
+
+
+# ---------------------------------------------------------------------------
+# Split integrity (NEW-01, NEW-02)
+# ---------------------------------------------------------------------------
+
+def _split_passage(lang, book, chapter, verse, partition, source):
+    return {"language": lang, "book": book,
+            "reference": f"{book} {chapter}:{verse}",
+            "partition": partition, "source_text": source,
+            "english_text": "english", "source_edition": "WLC",
+            "translation_edition": "WEB", "license": "PD",
+            "provenance": "test fixture"}
+
+
+def test_group_integrity_mixed_language_daniel():
+    # NEW-01: Daniel chapters 2 and 7 contain BOTH profiles with
+    # different per-profile partitions. Keyed by (language, book,
+    # chapter) the full corpus passes; the old (book, chapter) key
+    # would have raised LeakageError.
+    from training.datasets.prepare_parallel import check_group_integrity
+    rows = [
+        _split_passage("biblical_hebrew", "Daniel", 2, 1, "validation", "א"),
+        _split_passage("biblical_aramaic", "Daniel", 2, 4, "validation", "ב"),
+        _split_passage("biblical_hebrew", "Daniel", 7, 1, "validation", "ג"),
+        _split_passage("biblical_aramaic", "Daniel", 7, 9, "test", "ד"),
+        _split_passage("biblical_hebrew", "Ruth", 1, 1, "test", "ה"),
+        _split_passage("biblical_aramaic", "Ezra", 4, 8, "train", "ו"),
+    ]
+    check_group_integrity(rows)  # must not raise
+
+
+def test_group_integrity_still_catches_same_profile_span():
+    # Chapter-level checks remain in force WITHIN a profile.
+    from training.datasets.prepare_parallel import LeakageError, check_group_integrity
+    rows = [
+        _split_passage("biblical_hebrew", "Genesis", 1, 1, "train", "א"),
+        _split_passage("biblical_hebrew", "Genesis", 1, 2, "validation", "ב"),
+    ]
+    with pytest.raises(LeakageError):
+        check_group_integrity(rows)
+
+
+def test_prepare_run_mixed_corpus_counts(tmp_path):
+    # NEW-01/NEW-02 regression: prepare_parallel.run() over a mixed
+    # corpus completes and reports the per-profile split counts.
+    from training.datasets.prepare_parallel import run
+    corpus = tmp_path / "corpus.jsonl"
+    rows = [
+        _split_passage("biblical_hebrew", "Genesis", 1, 1, "train", "א ב"),
+        _split_passage("biblical_hebrew", "Genesis", 30, 1, "validation", "ג ד"),
+        _split_passage("biblical_hebrew", "Ruth", 1, 1, "test", "ה ו"),
+        _split_passage("biblical_aramaic", "Ezra", 4, 8, "train", "ז ח"),
+        _split_passage("biblical_aramaic", "Daniel", 2, 4, "validation", "ט י"),
+        _split_passage("biblical_aramaic", "Daniel", 3, 1, "test", "ך כ"),
+    ]
+    corpus.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows),
+                      encoding="utf-8")
+    report = run(corpus, tmp_path / "prepared")
+    assert report["profiles"]["biblical_hebrew"]["pairs_per_split"] == {
+        "train": 1, "validation": 1, "test": 1}
+    assert report["profiles"]["biblical_aramaic"]["pairs_per_split"] == {
+        "train": 1, "validation": 1, "test": 1}

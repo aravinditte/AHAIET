@@ -427,3 +427,71 @@ Windows smoke (test_windows_setup_smoke): on a Windows machine run
 then `scripts\start-backend.ps1` and confirm
 `GET /api/capabilities` reports `ocr.tesseract.usable: true`. Not yet
 executed anywhere.
+
+## Re-review remediation cases (NEW-01..NEW-27) — coded, NOT YET RUN
+
+Backend (from `backend/`): `python -m pytest tests/test_rereview.py -q`
+- NEW-04: test_readiness_labels_single_evaluated_engine
+- NEW-14: test_readiness_metric_without_run_record_is_not_evaluated
+- NEW-08: test_cross_profile_verified_plus_ambiguous_requires_choice
+- NEW-09: test_multiline_single_segment_uses_passage_flow,
+  test_single_line_keeps_direct_path (exact blank-line equality)
+- NEW-10: test_all_engines_timeout_gives_504_with_attempts,
+  test_all_engines_unavailable_gives_503_not_model_not_provisioned,
+  test_mixed_timeout_and_unavailable_gives_most_severe
+- NEW-12: test_token_guard_matrix (401 without/with wrong token,
+  non-401 with the configured token, across process, job
+  read/result/cancel, history read/delete, uploads read)
+- NEW-15: test_recovery_fails_only_stale_heartbeat_jobs (two
+  JobManager instances; only the stale-heartbeat job is failed)
+- NEW-16: test_job_ocr_deadline_terminates_hanging_worker (a
+  list-langs-answering but otherwise hanging Tesseract double; the
+  job ends failed with ocr_timeout well inside the adapter timeout)
+- NEW-17: test_tier_validated_for_production_when_all_gates_hold,
+  test_tier_high_cer_blocks_production (CER 0.45),
+  test_tier_absent_script_identity_blocks_production,
+  test_tier_fake_dataset_hash_blocks_production,
+  test_tier_too_few_samples_blocks_production
+- NEW-20: test_tesseract_probe_failure_not_usable_despite_traineddata
+- NEW-21: test_tsv_offsets_slice_back_to_words (repeated, punctuated
+  words; offsets slice back exactly)
+- NEW-23: test_grapheme_clusters_keep_niqqud_with_base_letters
+- NEW-27: test_verify_artifacts_catches_same_size_edit_with_restored_mtime
+- NEW-18: test_languages_status_reflects_corpus
+- NEW-26: `python -m pytest tests/test_docs_consistency.py -q`
+  (books, split counts, model statuses, security controls vs docs)
+
+Updated existing cases: tests/test_remediation.py
+test_preserve_blank_lines now asserts exact strings (NEW-25);
+test_translate_lineage_original_null_without_ocr uses a real
+fixture-corpus match and asserts 200 + lineage fields (NEW-25);
+the same-profile fallback test uses a command-vector double (NEW-05).
+
+Training (from repo root):
+`python -m pytest training/tests/test_remediation_training.py -q`
+- NEW-04: test_selection_single_qualified_engine_labelled,
+  test_selection_one_qualified_one_stale_competitor,
+  test_selection_head_to_head_when_two_share_signature
+  (replacing test_selection_requires_comparable_runs)
+- NEW-01/NEW-02: test_group_integrity_mixed_language_daniel,
+  test_group_integrity_still_catches_same_profile_span,
+  test_prepare_run_mixed_corpus_counts
+
+Frontend E2E (from `frontend/`): `npx playwright test e2e/race.spec.ts`
+- NEW-06: "stale translate response is discarded after an edit"
+  (route interception; the delayed response resolves after an edit
+  and is never published; a fresh request publishes)
+- NEW-07: "starting OCR supersedes previous output and disables
+  translation"
+
+Acceptance (provisioned machines only, from `backend/`):
+`AHAIET_RELEASE_GATE=1 python -m pytest tests/test_real_pipeline_acceptance.py -q -m model_required`
+- test_offline_full_real_pipeline_hebrew and
+  test_offline_full_real_pipeline_aramaic (NEW-24): the corpus is
+  provisioned from the committed fixture passages as an explicit
+  step; the UNCORRECTED OCR output must pass CER <= 0.35 /
+  WER <= 0.50 against the fixture ground truth before the
+  correction/translation assertions; release-gate mode turns every
+  prerequisite skip into a failure.
+- test_ocr_quality_gate_rejects_wrong_output (unit-level; runs
+  anywhere, no provisioning needed)

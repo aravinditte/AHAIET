@@ -11,6 +11,13 @@ export interface UncertainSpan {
   text: string; conf: number; line: number; left: number; top: number; width: number; height: number;
   // AHAIET-028/040: token occurrence identity from TSV order.
   index?: number; occurrence_id?: string; block?: number; par?: number; line_id?: string;
+  // NEW-21: authoritative character offsets (Unicode code points)
+  // of this token within the raw OCR text.
+  char_start?: number; char_end?: number; offset_encoding?: string;
+}
+export interface OcrToken {
+  index: number; text: string; char_start: number; char_end: number;
+  offset_encoding: string; line?: number; conf?: number | null;
 }
 export interface OcrResult {
   request_id: string; status: string; original_ocr_text: string;
@@ -20,14 +27,18 @@ export interface OcrResult {
   processing_time_ms: number;
   // Additive: engine routing + per-stage timings.
   script_profile?: string; engine_version?: string | null;
+  // NEW-21: every OCR token with authoritative offsets.
+  tokens?: OcrToken[];
+  offset_encoding?: string;
   lines?: { line: number; text: string; mean_confidence: number | null }[] | null;
   stage_timings_ms?: Record<string, number>;
 }
 export interface ScriptSupport {
   id: string; name: string; script: string; route: string; note?: string;
   status: "supported" | "unsupported"; engine: string | null; reason: string | null;
-  // AHAIET-025: support tiers replace the old binary flag in the UI.
-  tier?: "model_installed" | "experimentally_evaluated" | "production_supported" | "unsupported";
+  // Support tiers (AHAIET-025; renamed and tightened by NEW-17).
+  tier?: "engine_installed" | "operational" | "evaluated_on_dataset" | "validated_for_production" | "unsupported";
+  unmet_conditions?: string[];
   evidence?: Record<string, unknown>;
   evaluation: { cer: number; wer?: number | null; test_set?: string; test_samples?: number | null; dataset_sha256?: string | null; evaluated_at?: string } | null;
   checkpoint: { id: string | null; path: string; sha256: string } | null;

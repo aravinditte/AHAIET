@@ -52,6 +52,23 @@ def collect_test_pairs(test_dir: Path) -> tuple[list[tuple[Path, str]], list[str
     return pairs, problems
 
 
+def dataset_sha256(test_dir) -> str:
+    """Hash of the labelled evaluation dataset (NEW-17): sha256 over
+    the sorted relative paths and bytes of every file under the test
+    directory. backend/app/services/ocr/script_profiles.py recomputes
+    exactly this to verify an evaluation record."""
+    import hashlib as _h
+    root = Path(test_dir)
+    h = _h.sha256()
+    if root.is_file():
+        return _h.sha256(root.read_bytes()).hexdigest()
+    for path in sorted(root.rglob("*")):
+        if path.is_file():
+            h.update(str(path.relative_to(root)).encode("utf-8"))
+            h.update(path.read_bytes())
+    return h.hexdigest()
+
+
 def compute_htr_scores(pairs: list[tuple[str, str]]) -> dict:
     """Aggregate CER/WER over (reference, hypothesis) text pairs.
 
@@ -108,6 +125,11 @@ def main(argv: list[str] | None = None) -> int:
     scores = compute_htr_scores(scored)
     record = {
         "engine": "kraken",
+        # NEW-17: the dataset hash lets the backend verify the record
+        # against the actual labelled dataset (sha256 over the sorted
+        # relative paths + bytes of every file under the test dir;
+        # the backend recomputes it identically).
+        "dataset_sha256": dataset_sha256(args.test_dir),
         "script_profile": args.profile,
         "checkpoint": str(args.checkpoint),
         "checkpoint_sha256": sha256_file(args.checkpoint),

@@ -117,3 +117,28 @@ docs/PROJECT_CONTRACT.md.
 - **Fallback metric naming.** The pure-Python fallback is recorded as
   `chrf` — never `chrf_pp` — and is not comparable with sacrebleu
   chrF++ runs.
+
+## Selection basis (NEW-04) and metric lifetime (NEW-14)
+
+- A single qualifying engine MAY be selected. The selection record
+  (model card + manifest) then carries
+  `selection_basis="single_evaluated_engine"` and `comparable=false`:
+  the engine won by being the only comparable measurement, not by
+  beating another engine. `selection_basis="head_to_head"` with
+  `comparable=true` is written only when at least two engines share
+  the run signature (same test-set sha256, sample count, and metric
+  signature). With no qualifying engine, selection falls back to the
+  documented default order and says so
+  (`selection_basis="default_order"`).
+- Every evaluation run invalidates the profile's prior metrics on
+  EVERY engine card — winner and losers alike: superseded scores move
+  under `metrics_history` with `status: "stale"` and the superseding
+  run id, so a stale high score can never win a later selection.
+- A chrF++ value counts only with its run record: test-set sha256,
+  sample count, metric signature, the artifact sha256 it was measured
+  on, and the run date, all present and the artifact hash matching
+  the current artifact. A bare number on a card is reported as
+  `metric_without_run` and ignored by readiness and selection.
+- The pure-Python fallback metric is recorded under the key `chrf`,
+  never `chrf_pp`, and fallback numbers are never compared with
+  sacrebleu numbers (metric signature mismatch).

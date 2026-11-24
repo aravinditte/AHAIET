@@ -27,8 +27,8 @@ The Kraken adapter (`backend/app/services/ocr/kraken_adapter.py`) is a real inte
 ### Script support matrix (computed, never declared)
 `GET /api/scripts` returns the live support matrix, computed by `backend/app/services/ocr/script_profiles.py` from the registry in `script_profiles.json`:
 
-- `hebrew_square` — supported when the Tesseract route is provisioned.
-- `paleo_hebrew`, `imperial_aramaic`, `jewish_babylonian_aramaic_script`, `classical_syriac_estrangela` — supported **only** when all of the following hold at once: an evaluation record exists at `artifacts/benchmarks/htr-eval-<profile>.json`; the record carries a measured CER; and the record's `checkpoint_sha256` equals the hash of a Kraken checkpoint file present on disk for that profile. Anything less reports `unsupported` with the specific missing evidence as the reason. There is no hand-edited support boolean anywhere, and no historical script is supported by default.
+- `hebrew_square` — tier `operational` when the Tesseract route's probe says usable (see probe honesty below); never `validated_for_production` without an evaluation record meeting the same bar as the Kraken route.
+- Historical profiles — tier `validated_for_production` **only** when ALL gates hold at once (NEW-17): an evaluation record exists at `artifacts/benchmarks/htr-eval-<profile>.json`; the record's script identity EQUALS the profile id (an absent script field does not pass); its `dataset_sha256` is verified by recomputing the hash of the recorded dataset; it covers at least 50 independently labelled samples; its CER is finite and <= 0.20 AND a WER is recorded; and its `checkpoint_sha256` equals the hash of a Kraken checkpoint file present on disk for that profile. A measured record that fails any gate reports tier `evaluated_on_dataset` with the failed gates named in `unmet_conditions`. There is no hand-edited support boolean anywhere, and no historical script is supported by default.
 
 `/api/ocr` accepts `engine` (`auto` | `tesseract` | `kraken`) and `script_profile`. Routing never substitutes silently: Tesseract refuses historical script profiles, Kraken refuses profiles the matrix does not compute as supported, and `auto` means Tesseract for `hebrew_square` only — each refusal is an explicit `script_unsupported` error (HTTP 422).
 
@@ -94,3 +94,34 @@ This writes `artifacts/benchmarks/htr-eval-paleo_hebrew.json` with the measured 
   degradation stratum labels. `training/ocr/evaluate_ocr.py` scores
   registry entries per stratum alongside the synthetic stratum when
   entries exist.
+
+## Probe honesty, offsets, and the job worker (NEW-20, NEW-21, NEW-16, NEW-23)
+
+- **Probe honesty (NEW-20).** Readiness runs `tesseract --list-langs`.
+  If the probe fails (nonzero exit, timeout, undecodable output), the
+  report is `probe_failed: true`, `usable: false`, with the reason
+  stated — regardless of traineddata files on disk. File presence is
+  reported separately as `language_data_file_present` and never makes
+  the engine usable on its own: a binary that cannot list its
+  languages cannot be trusted to load them.
+- **Token offsets (NEW-21).** OCR responses carry `tokens[]` with
+  `char_start`/`char_end` code-point offsets into the raw text
+  (`offset_encoding: "unicode_code_points"`), and uncertain spans
+  carry the same offsets. Tesseract offsets come from TSV assembly
+  order (exact); Kraken offsets come from line assembly order. The
+  frontend highlights by slicing offsets; when offsets are absent it
+  falls back to occurrence matching and labels the highlighting
+  approximate.
+- **Job worker (NEW-16).** On the /api/process path, OCR runs in a
+  subprocess (`python -m app.services.ocr.worker_entry`) bounded by
+  the job's remaining deadline; on expiry the process is terminated
+  and the job ends `failed` with `ocr_timeout`. The synchronous
+  /api/ocr path calls the engines in-process, bounded by
+  AHAIET_OCR_TIMEOUT_S.
+- **Kraken confidences (NEW-23).** Per-character confidences are
+  aligned to grapheme clusters (base character + combining marks in
+  categories Mn/Me/Mc + ZWJ sequences — a documented approximation of
+  UAX #29), because Kraken reports confidences per grapheme while
+  pointed Hebrew text has more code points than graphemes. When the
+  counts cannot be reconciled, the result reports
+  `confidence_unavailable` instead of misaligned numbers.

@@ -224,3 +224,164 @@ prerequisite is external evidence only the developer can produce.
 - AHAIET-056 fixed — docs/PROVISIONING.md state machine with a
   verification command per state; capabilities exposes
   provisioning_state computed from live checks.
+
+## Re-review remediation (findings NEW-01..NEW-27) — code only, not run
+
+Executed against the re-review of the remediation merge. All
+findings are addressed in code except NEW-03, which remains an
+acceptance blocker. Per-finding:
+
+- NEW-01 fixed — prepare_parallel.check_group_integrity and
+  chapter_block key groups by (language_profile, book, chapter);
+  chapter-level checks remain within each profile. Regression tests
+  in training/tests/test_remediation_training.py.
+- NEW-02 fixed (data preparation run) — importer parses Ruth.xml
+  (sha256 fb6a2660…) as the held-out Hebrew test book; Daniel
+  Aramaic split by chapter groups (ch. 2 validation, chs. 3–7 test);
+  Daniel Hebrew validation; Genesis/Ezra unchanged. Recorded parse:
+  2,255 verses, 2,250 aligned, Hebrew 1,988 / Aramaic 267, 0
+  duplicates, 0 validation errors; prepare_parallel passed group
+  integrity + exact/nodiac cross-split checks with 0
+  near-duplicates. Pairs: Hebrew 906/996/85, Aramaic 67/46/150.
+  Aramaic train stays Ezra-only (67); the Marian 500-pair gate
+  remains honestly unmet. datasets.json import_report replaced.
+- NEW-03 BLOCKED — no Tesseract binary, no trained checkpoints, no
+  real end-to-end run. ACCEPTANCE_AUDIT records it blocked with the
+  exact provisioned-machine acceptance sequence; nothing is labelled
+  end-to-end tested.
+- NEW-04 fixed — policy implemented as decided: single qualifying
+  engine selectable with selection_basis="single_evaluated_engine",
+  comparable=false; head_to_head only for >= 2 engines sharing the
+  run signature. write_selection, selection.selection_basis, and
+  readiness aligned; tests cover the single-qualified case, the
+  stale-competitor follow-up, and the two-engines-same-split
+  follow-up.
+- NEW-05 fixed — backend/tests/double_factory.py writes genuinely
+  executable doubles (shebang + chmod 0o755 on POSIX, .cmd wrapper
+  on Windows); adapters accept string / shlex / command-VECTOR
+  config via services/translation/command.py (no shell). Existing
+  double-based tests migrated to the factory/vector form; the
+  POSIX-only skip markers on those tests were removed.
+- NEW-06 fixed — page.tsx: every upstream input change bumps the
+  request sequence AND aborts in-flight requests; results publish
+  only when the input fingerprint captured at request start still
+  matches. Deterministic spec: frontend/e2e/race.spec.ts.
+- NEW-07 fixed — starting OCR moves previous OCR output to a
+  labelled superseded state (out of the active text) and disables
+  translation until the run completes; OCR engine/script/profile
+  changes invalidate OCR state.
+- NEW-08 fixed — with no profile selected, verified match in one
+  profile + ambiguous candidate set in another raises
+  ProfileChoiceRequired; only clean single-profile evidence proceeds.
+- NEW-09 fixed — routing uses total line structure
+  (Segmentation.contains_multiple_lines): any line boundaries take
+  the passage flow even with one nonblank segment; blank-line
+  positions preserved exactly (exact assertions, NEW-25).
+- NEW-10 fixed — _run_selected/_run_selected_batch record per-engine
+  attempts and _raise_for_attempts preserves the categorized error:
+  all-timeout 504 translation_timeout, all-unavailable 503, mixed
+  most-severe; never model_not_provisioned when engines existed.
+- NEW-11 fixed — token settings field stored ONLY in sessionStorage;
+  api client attaches X-AHAIET-Access-Token to fetches; the preview
+  image is fetched as a Blob via authenticated request and shown via
+  a revocable object URL. Never NEXT_PUBLIC_*, never query params.
+- NEW-12 fixed — _require_access now guards process submission, job
+  read/result/cancel, history read/delete, and uploads read; the 401
+  matrix is tested in backend/tests/test_rereview.py.
+- NEW-13 fixed — adapters launch decoders with cwd=artifact_dir;
+  SMT export writes absolute paths into moses.ini, Marian export
+  writes absolute model/vocab paths into decoder-config.yml, and
+  export verification resolves references from an unrelated cwd.
+- NEW-14 fixed — write_selection archives prior metrics on EVERY
+  engine card for the profile (metrics_history, status stale,
+  superseded_by run id) even when nothing qualifies;
+  _recorded_chrf returns a score only with a valid run record;
+  readiness "evaluated" requires that record.
+- NEW-15 fixed — DB migration v5 adds jobs.owner_id + heartbeat_at;
+  JobManager stamps a per-instance worker id and heartbeats while
+  working; startup recovery moved into the FastAPI lifespan and
+  fails only jobs whose heartbeat is older than
+  AHAIET_JOB_HEARTBEAT_STALE_S (default 120s); recovery failures are
+  logged structurally and surfaced via app.state, never swallowed;
+  graceful executor shutdown on lifespan exit.
+- NEW-16 fixed — job OCR runs through the
+  app.services.ocr.worker_entry subprocess bounded by the job's
+  remaining deadline; expiry terminates the process and ends the job
+  failed with ocr_timeout (504); cancellation terminates it too;
+  terminal states guaranteed and queue capacity recovers.
+- NEW-17 fixed — tiers renamed engine_installed / operational /
+  evaluated_on_dataset / validated_for_production; production
+  requires script identity == profile id, dataset hash recomputed
+  and matched, >= AHAIET_SCRIPT_PRODUCTION_MIN_SAMPLES (50) samples,
+  CER <= AHAIET_SCRIPT_PRODUCTION_MAX_CER (0.20) and a recorded WER,
+  checkpoint hash match; evaluate_htr records dataset_sha256;
+  /api/scripts returns tier + unmet_conditions.
+- NEW-18 fixed — GET /api/languages derives translation_status per
+  profile from live corpus + engine state via the shared readiness
+  computation (retrieval_available / model_evaluated /
+  model_installed_unevaluated / not_provisioned).
+- NEW-19 fixed — ExportButtons source payload = corrected if
+  nonempty else raw OCR; disabled only when both are empty. No
+  separate copy-raw action: when corrected is empty the payload IS
+  the raw text, and the raw text stays visible read-only in the
+  editor (documented choice).
+- NEW-20 fixed — tesseract readiness: failed --list-langs probe ->
+  probe_failed=true, usable=false, honest reason; traineddata file
+  presence reported separately as language_data_file_present.
+- NEW-21 fixed — OCR tokens carry authoritative code-point offsets
+  (Tesseract from TSV assembly; Kraken from line assembly order);
+  uncertain_spans reference offsets; /api/ocr returns tokens +
+  offset_encoding; the frontend highlights by slicing offsets and
+  labels the occurrence fallback approximate.
+- NEW-22 fixed — Image.MAX_IMAGE_PIXELS is set once at startup from
+  config; validate_and_decode enforces the per-request pixel ceiling
+  explicitly and no longer mutates the global; the enhanced median
+  decision comes from a downscaled (800px) classifier pass, with the
+  full-resolution median computed only when fine detail is absent;
+  the derived-memory budget refusal predates this round and is kept.
+- NEW-23 fixed — Kraken confidence alignment uses
+  grapheme_clusters() (base + Mn/Me/Mc combining marks + ZWJ
+  sequences; documented UAX #29 approximation); cluster/confidence
+  count mismatch -> confidence_unavailable; words carry per-line
+  char offsets.
+- NEW-24 fixed — acceptance test strengthened: uncorrected OCR is
+  scored with CER/WER against fixture ground truth under documented
+  thresholds (CER <= 0.35, WER <= 0.50); a deliberately-wrong OCR
+  string fails the gate in a unit-level check; both Hebrew and
+  Aramaic image cases run; the corpus is provisioned into the test
+  DB as an explicit fixture step via the real importer;
+  AHAIET_RELEASE_GATE=1 converts skips to failures.
+- NEW-25 fixed — exact blank-line assertions (no tolerating
+  or-branches); lineage positive path uses a real fixture-corpus
+  match and asserts 200 + lineage fields; frontend race coverage is
+  the Playwright route-interception spec (race.spec.ts), no real
+  backend needed. E2E selector alignment (done): the page's uploaded
+  image preview now carries data-testid="upload-preview" (renamed
+  from image-preview, which nothing referenced), and
+  translator.spec.ts / remediation.spec.ts now use the current
+  page's hooks — extract-button for the OCR run, translate-button
+  for translation, and getByTestId("file-input") instead of the
+  #file-input id locator (the input's id is "file"). Every
+  data-testid referenced in frontend/e2e/*.spec.ts exists in
+  frontend/src (grep-verified); the fixture-manifest flow and the
+  honest-unsupported smoke vs AHAIET_E2E_GATE=release acceptance
+  split in translator.spec.ts are unchanged.
+- NEW-26 fixed — docs/LIMITATIONS.md and docs/BUILD_STATE.md
+  rewritten from the current manifests/source; historic counts moved
+  to a dated, clearly-superseded changelog in BUILD_STATE;
+  backend/tests/test_docs_consistency.py checks books covered, split
+  counts, model statuses, and that security controls named in docs
+  exist in code.
+- NEW-27 fixed — model_artifacts.verify_artifacts(settings,
+  force=True) always rehashes content; the resolution cache serves
+  the fast path only within AHAIET_ARTIFACT_INTEGRITY_TTL_S and is
+  invalidated on manifest revision change and at startup (lifespan
+  calls verify_artifacts(force=True), logging failures); SHA-named
+  immutable artifact directories + atomic activation documented in
+  docs/TRAINING.md. Regression test: same-size edit with restored
+  mtime is caught.
+
+New settings: AHAIET_ARTIFACT_INTEGRITY_TTL_S (300),
+AHAIET_JOB_HEARTBEAT_STALE_S (120),
+AHAIET_SCRIPT_PRODUCTION_MIN_SAMPLES (50),
+AHAIET_SCRIPT_PRODUCTION_MAX_CER (0.20). New DB migration: v5.

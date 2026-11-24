@@ -21,13 +21,14 @@ Output (default training/datasets/prepared/<profile>/):
 Split strategy: the importer's recorded group strategy is reused, not
 reinvented — the corpus rows already carry a `partition` assigned by
 book blocks (Genesis chapters 1-25 train, 26-50 validation; Ezra train
-for both languages; Daniel Hebrew validation; Daniel Aramaic held out
-as test; see artifacts/manifests/datasets.json). This script verifies
-that no (book, chapter) group spans two splits, then writes the
-splits per language profile, separately. Biblical Aramaic training
-material comes from Ezra's documented Aramaic ranges (an independent
-book); Daniel's Aramaic verses remain the held-out test set and never
-appear in training (AHAIET-008).
+for both languages; Daniel Hebrew validation; Daniel Aramaic chapter
+2 validation, chapters 3-7 test; Ruth held out as the Hebrew test
+book; see artifacts/manifests/datasets.json). This script verifies
+that no (language, book, chapter) group spans two splits (NEW-01),
+then writes the splits per language profile, separately. Biblical
+Aramaic training material comes from Ezra's documented Aramaic
+ranges (an independent book); Daniel's Aramaic verses are never in
+training (AHAIET-008, NEW-02).
 
 Leakage rules:
 - an exact duplicate (normalized source key) appearing in two splits
@@ -84,12 +85,19 @@ class LeakageError(Exception):
     """Raised when a hard leakage rule is violated."""
 
 
-def chapter_block(passage: dict) -> tuple[str, int]:
-    """The passage-group key: (book, chapter). Groups never span splits."""
+def chapter_block(passage: dict) -> tuple[str, str, int]:
+    """The passage-group key: (language_profile, book, chapter)
+    (NEW-01). Groups never span splits WITHIN a language profile.
+    The key must include the profile: Daniel chapters 2 and 7 contain
+    both Biblical Hebrew and Biblical Aramaic verses whose partitions
+    deliberately differ per profile (Daniel Hebrew -> validation;
+    Daniel Aramaic chapter 2 -> validation, chapters 3-7 -> test), so
+    a (book, chapter) key would falsely report a group spanning
+    splits. Chapter-level checks remain in force inside each profile."""
     m = _REF_RE.match(passage.get("reference", ""))
     if m:
-        return m.group(1), int(m.group(2))
-    return passage.get("book", ""), -1
+        return passage.get("language", ""), m.group(1), int(m.group(2))
+    return passage.get("language", ""), passage.get("book", ""), -1
 
 
 def load_corpus(path: Path) -> list[dict]:
@@ -269,7 +277,7 @@ def prepare_profile(profile: str, passages: list[dict], out_dir: Path,
         "translation_editions": sorted({p["translation_edition"] for p in rows}),
         "licenses": sorted({p["license"] for p in rows}),
         "split_strategy": split_strategy or
-            "Importer group strategy: Genesis chapters 1-25 train, 26-50 validation, Daniel test (book/chapter blocks, no random verse-level split).",
+            "Importer group strategy: Genesis chapters 1-25 train, 26-50 validation; Ezra train; Daniel Hebrew validation; Daniel Aramaic chapter 2 validation, chapters 3-7 test; Ruth test ((language, book, chapter) groups, no random verse-level split).",
         "views": {
             "vocalized": "Canonical source text with niqqud/cantillation preserved; the default training and inference view.",
             "consonantal": "Diacritic-stripped view (normalize_nodiac) for comparison experiments; clearly a derived view, never the canonical text.",
@@ -303,13 +311,16 @@ def run(corpus_path: Path, out_dir: Path, profiles: tuple[str, ...] = PROFILES,
             "small_corpus": card["small_corpus"]["is_small"],
             "near_duplicates_flagged": len(card["_leakage"]["near_duplicates"]),
         }
-        if profile == "biblical_aramaic" and card["splits"]["train"]["pairs"] == 0:
+        for split_name in SPLITS:
+            if card["splits"][split_name]["pairs"] == 0:
+                report["profiles"][profile].setdefault("empty_splits", []).append(split_name)
+        if profile == "biblical_aramaic":
             report["profiles"][profile]["data_statement"] = (
-                "All Aramaic passages sit in the held-out Daniel test partition under "
-                "the recorded split strategy, so this profile currently has no training "
-                "or validation data. SMT/NMT training for this profile cannot proceed "
-                "until the split strategy is deliberately revised or more Aramaic books "
-                "are imported; the prepared test files exist for evaluation only.")
+                "Biblical Aramaic training material comes only from Ezra (an "
+                "independent book); Daniel Aramaic is split by chapter groups "
+                "(chapter 2 validation, chapters 3-7 test) and never enters "
+                "training. The training count remains far below the Marian "
+                "500-pair data gate; that gate is documented, not bypassed.")
     (out_dir / "prep_report.json").parent.mkdir(parents=True, exist_ok=True)
     (out_dir / "prep_report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")

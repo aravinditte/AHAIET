@@ -26,15 +26,10 @@ def _sha(data: bytes) -> str:
 
 
 def _fake_binary(tmp_path: Path, name: str, prefix: str) -> Path:
-    script = tmp_path / name
-    script.write_text(
-        f"#!{sys.executable}\n"
-        "import sys\n"
-        "for line in sys.stdin:\n"
-        f"    sys.stdout.write({prefix!r} + line)\n",
-        encoding="utf-8")
-    script.chmod(0o755)
-    return script
+    # NEW-05: genuinely executable double (shebang + chmod on POSIX,
+    # .cmd wrapper on Windows) from the shared factory.
+    from double_factory import echo_double
+    return echo_double(tmp_path, name, prefix)["path"]
 
 
 def _write_card(artifact_dir: Path, engine: str, profile: str, files: list[dict],
@@ -45,6 +40,13 @@ def _write_card(artifact_dir: Path, engine: str, profile: str, files: list[dict]
             "files": files, "dataset_card_sha256": None, "dataset_id": "parallel-test",
             "tool_versions": {}, "license": "test fixture", "provenance": "test fixture",
             "metrics": metrics}
+    if metrics and metrics.get("chrf_pp") is not None:
+        # NEW-14: a recorded score counts only with a valid run
+        # record; fixtures that mean "evaluated" must carry one.
+        card["evaluation_run"] = {
+            "run_id": "test-fixture-run", "test_set_sha256": "cd" * 32,
+            "sample_count": 50, "metric_signature": "sacrebleu-test:CHRF(word_order=2)+BLEU",
+            "artifact_sha256": card["artifact_sha256"], "date": "2026-11-24"}
     (artifact_dir / "model_card.json").write_text(json.dumps(card), encoding="utf-8")
     return card
 

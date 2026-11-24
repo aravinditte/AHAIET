@@ -139,15 +139,16 @@ def _sha(data: bytes) -> str:
 
 
 def _fake_binary(tmp_path: Path, name: str, prefix: str, counter: Path | None = None) -> Path:
-    script = tmp_path / name
-    lines = [f"#!{sys.executable}", "import sys"]
-    if counter is not None:
-        lines.append(f"open({str(counter)!r}, 'a').write('x')")
-    lines += ["for line in sys.stdin:",
-              f"    sys.stdout.write({prefix!r} + line)"]
-    script.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    script.chmod(0o755)
-    return script
+    # NEW-05: genuinely executable double from the shared factory.
+    from double_factory import echo_double
+    return echo_double(tmp_path, name, prefix, counter)["path"]
+
+
+def _fake_vector(tmp_path: Path, name: str, prefix: str, counter: Path | None = None) -> list:
+    """The command-vector form of the same double — portable on
+    Windows and POSIX alike (NEW-05)."""
+    from double_factory import echo_double
+    return echo_double(tmp_path, name, prefix, counter)["vector"]
 
 
 def _write_card(artifact_dir: Path, engine: str, files: list[dict],
@@ -159,6 +160,12 @@ def _write_card(artifact_dir: Path, engine: str, files: list[dict],
             "files": files, "dataset_card_sha256": "card-sha", "dataset_id": "parallel-test",
             "tool_versions": {}, "license": "test fixture", "provenance": "test fixture",
             "metrics": metrics}
+    if metrics and metrics.get("chrf_pp") is not None:
+        # NEW-14: scores count only with a valid run record.
+        card["evaluation_run"] = {
+            "run_id": "test-fixture-run", "test_set_sha256": "cd" * 32,
+            "sample_count": 50, "metric_signature": "sacrebleu-test:CHRF(word_order=2)+BLEU",
+            "artifact_sha256": card["artifact_sha256"], "date": "2026-11-24"}
     (artifact_dir / "model_card.json").write_text(json.dumps(card), encoding="utf-8")
     return card
 
@@ -206,24 +213,22 @@ def _model_settings(tmp_path: Path, entries: list[dict], **overrides) -> Setting
     return replace(base, **overrides)
 
 
-@pytest.mark.skipif(sys.platform.startswith("win"), reason="shebang test doubles need POSIX")
 def test_evaluated_engine_beats_unevaluated(tmp_path):
     moses = _moses_artifact(tmp_path)  # no metrics recorded
     marian = _marian_artifact(tmp_path, metrics={"chrf_pp": 20.0})
     s = _model_settings(tmp_path, [moses, marian],
-                        moses_cmd=str(_fake_binary(tmp_path, "moses-double", "MOSES-OUT ")),
-                        marian_decoder_cmd=str(_fake_binary(tmp_path, "marian-double", "MARIAN-OUT ")))
+                        moses_cmd=_fake_vector(tmp_path, "moses-double", "MOSES-OUT "),
+                        marian_decoder_cmd=_fake_vector(tmp_path, "marian-double", "MARIAN-OUT "))
     result = translate("טקסט שלא נמצא בשום מקור", s, "biblical_hebrew")
     assert result["engine"] == "marian"
     assert result["unevaluated_model"] is False
     assert result["provenance"]["evaluation_state"] == "evaluated"
 
 
-@pytest.mark.skipif(sys.platform.startswith("win"), reason="shebang test doubles need POSIX")
 def test_unevaluated_engine_is_flagged(tmp_path):
     moses = _moses_artifact(tmp_path)
     s = _model_settings(tmp_path, [moses],
-                        moses_cmd=str(_fake_binary(tmp_path, "moses-double", "MOSES-OUT ")))
+                        moses_cmd=_fake_vector(tmp_path, "moses-double", "MOSES-OUT "))
     result = translate("טקסט שלא נמצא בשום מקור", s, "biblical_hebrew")
     assert result["engine"] == "moses"
     assert result["unevaluated_model"] is True
@@ -374,13 +379,12 @@ def test_kraken_adapter_incompatible_is_reported(tmp_path, monkeypatch):
 
 # ---------- cache + timings ----------
 
-@pytest.mark.skipif(sys.platform.startswith("win"), reason="shebang test doubles need POSIX")
 def test_translation_cache_labels_second_hit(tmp_path):
     counter = tmp_path / "counter.txt"
     moses = _moses_artifact(tmp_path)
     s = _model_settings(tmp_path, [moses],
-                        moses_cmd=str(_fake_binary(tmp_path, "moses-double", "MOSES-OUT ",
-                                                   counter=counter)))
+                        moses_cmd=_fake_vector(tmp_path, "moses-double", "MOSES-OUT ",
+                                               counter=counter))
     text = "טקסט שלא נמצא בשום מקור"
     first = translate(text, s, "biblical_hebrew")
     assert first["cached"] is False

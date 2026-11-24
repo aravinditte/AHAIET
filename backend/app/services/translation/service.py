@@ -219,6 +219,38 @@ def _finalize_model_result(chosen, result: dict, profile: str, text: str,
     return result
 
 
+def _raise_for_attempts(attempts: list[dict]) -> None:
+    """NEW-10: when engines existed but every attempt failed, the
+    final categorized error is preserved — never a fall-through to
+    'no trained model'. All-timeout -> 504 translation_timeout;
+    all-unavailable -> the last 503; mixed -> the most severe
+    categorized error (timeout > other AppError > unavailable), with
+    per-engine attempt records attached for provenance."""
+    def severity(a: dict) -> int:
+        if a["status"] == 504 or a["code"] == "translation_timeout":
+            return 3
+        if a["status"] != 503:
+            return 2
+        return 1
+    detail = "Engines attempted: " + " | ".join(
+        f"{a['engine']} ({a['profile']}): {a['code']} — {a['message']}" for a in attempts)
+    if all(a["status"] == 504 or a["code"] == "translation_timeout" for a in attempts):
+        err = AppError(504, "translation_timeout",
+                       "Every provisioned translation engine timed out, so no "
+                       "translation was produced. A trained model IS provisioned; "
+                       "the failure is decoder timeout, not absence.",
+                       detail)
+        err.attempts = attempts  # type: ignore[attr-defined]
+        raise err
+    worst = max(attempts, key=severity)
+    if worst["status"] == 503:
+        err = UnavailableError(worst["code"], worst["message"], detail)
+    else:
+        err = AppError(worst["status"], worst["code"], worst["message"], detail)
+    err.attempts = attempts  # type: ignore[attr-defined]
+    raise err
+
+
 def _run_selected(text: str, settings: Settings, profiles: list[str],
                   deadline: float | None = None) -> dict | None:
     """Try the ordered trained engines per profile (AHAIET-020).
@@ -230,11 +262,15 @@ def _run_selected(text: str, settings: Settings, profiles: list[str],
     profile only that profile is tried; without one, the profile
     order is the documented PROFILES order and the matched profile is
     reported on the result. Results are served from / stored to the
-    translation cache — consulted only here, never for retrieval."""
+    translation cache — consulted only here, never for retrieval.
+
+    Returns None ONLY when no complete engine exists in any tried
+    profile. When engines existed but all failed, the categorized
+    error is raised (NEW-10)."""
     from .moses_adapter import run as run_moses_engine
     from .marian_adapter import run as run_marian_engine
     failures: list[str] = []
-    last_error: UnavailableError | None = None
+    attempts: list[dict] = []
     for profile in profiles:
         for chosen in selection.select_engines(settings, profile):
             key = translation_cache.cache_key(profile, text, chosen.engine,
@@ -259,14 +295,13 @@ def _run_selected(text: str, settings: Settings, profiles: list[str],
                 # and fall through to the next engine IN THIS PROFILE.
                 failures.append(
                     f"Engine {chosen.engine} for {profile} failed ({e.code}: {e.message})")
-                if isinstance(e, UnavailableError):
-                    last_error = e
+                attempts.append({"engine": chosen.engine, "profile": profile,
+                                 "code": e.code, "status": e.status_code,
+                                 "message": e.message})
                 continue
             return _finalize_model_result(chosen, result, profile, text, settings, failures)
-    if last_error is not None and failures:
-        err = last_error
-        err.detail = ((err.detail or "") + " Engines tried: " + " | ".join(failures)).strip()
-        raise err
+    if attempts:
+        _raise_for_attempts(attempts)
     return None
 
 
@@ -276,10 +311,12 @@ def _run_selected_batch(texts: list[str], settings: Settings, profile: str,
     (AHAIET-035): one decoder invocation for the whole segment batch
     per engine, engines tried in selection order within the profile.
     Returns one finalized result per input text, or None when no
-    engine in the profile could run the batch."""
+    engine in the profile exists. When engines existed but all
+    failed, the categorized error is raised (NEW-10)."""
     from .moses_adapter import run_batch as run_moses_batch
     from .marian_adapter import run_batch as run_marian_batch
     failures: list[str] = []
+    attempts: list[dict] = []
     for chosen in selection.select_engines(settings, profile):
         runner = run_marian_batch if chosen.engine == "marian" else run_moses_batch
         try:
@@ -289,9 +326,14 @@ def _run_selected_batch(texts: list[str], settings: Settings, profile: str,
         except (UnavailableError, AppError) as e:
             failures.append(
                 f"Engine {chosen.engine} for {profile} failed ({e.code}: {e.message})")
+            attempts.append({"engine": chosen.engine, "profile": profile,
+                             "code": e.code, "status": e.status_code,
+                             "message": e.message})
             continue
         return [_finalize_model_result(chosen, result, profile, text, settings, failures)
                 for result, text in zip(results, texts)]
+    if attempts:
+        _raise_for_attempts(attempts)
     return None
 
 
@@ -323,6 +365,15 @@ def translate(text: str, settings: Settings, language: str | None = None,
     # one profile. Matches in multiple profiles -> explicit choice.
     if language is None and len(matches) > 1:
         raise ProfileChoiceRequired([p for p, _ in matches], evidence)
+    # NEW-08: a verified match in one profile does NOT settle the
+    # profile when another profile holds an ambiguous candidate set
+    # for the same text — credible cross-profile evidence of either
+    # kind (verified OR ambiguous) requires an explicit choice. Only
+    # clean single-profile evidence proceeds.
+    if language is None and matches and ambiguous is not None \
+            and ambiguous[0] != matches[0][0]:
+        raise ProfileChoiceRequired(
+            sorted({matches[0][0], ambiguous[0]}), evidence)
     if matches:
         profile, match = matches[0]
         out = {"english_translation": match["english_text"],
@@ -432,7 +483,7 @@ def translate_passage(text: str, settings: Settings, language: str | None = None
             f"Passage has {len(segmentation.segments)} segments; the configured limit is "
             f"{settings.max_segments} (AHAIET_MAX_SEGMENTS).",
             "Split the passage into smaller requests, or raise the limit in configuration.")
-    if not segmentation.is_multiline:
+    if not segmentation.contains_multiple_lines:
         result = translate(text, settings, language, context)
         only = segmentation.segments[0]
         result["segments"] = [{"index": only.index, "source_text": only.source_text,

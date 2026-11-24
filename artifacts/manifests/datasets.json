@@ -25,7 +25,7 @@
       "license": "WLC text: Public Domain; morphhb annotations: CC BY 4.0",
       "local_path": "artifacts/corpora/morphhb/Dan.xml",
       "name": "Open Scriptures Hebrew Bible (morphhb) — WLC Daniel, OSIS XML",
-      "partition_strategy": "Daniel Hebrew is assigned to validation; Daniel Aramaic is the held-out test partition (book-level, per language profile)",
+      "partition_strategy": "Daniel Hebrew is assigned to validation; Daniel Aramaic is split by chapter groups (chapter 2 validation, chapters 3-7 test) so Aramaic gains a disjoint validation group while Daniel stays held out of training (per language profile)",
       "sha256": "bc69d0fa9708dacb11ea6d587509250bf1bcc1b4343eac2d6e97f8b41518fc0d",
       "source_edition": "Westminster Leningrad Codex (WLC) via Open Scriptures morphhb (OSHB)",
       "url": "https://raw.githubusercontent.com/openscriptures/morphhb/master/wlc/Dan.xml"
@@ -61,44 +61,61 @@
       "sha256": "fb28ff697d0ee17eba5b4db47fb7261ee1870cea0d5701bfc77c9e28d4138129",
       "source_edition": "Westminster Leningrad Codex (WLC) via Open Scriptures morphhb (OSHB)",
       "url": "https://raw.githubusercontent.com/openscriptures/morphhb/master/wlc/Ezra.xml"
+    },
+    {
+      "downloaded": "2026-11-24",
+      "id": "morphhb-wlc-ruth",
+      "language_profiles": [
+        "biblical_hebrew"
+      ],
+      "license": "WLC text: Public Domain; morphhb annotations: CC BY 4.0",
+      "local_path": "artifacts/corpora/morphhb/Ruth.xml",
+      "name": "Open Scriptures Hebrew Bible (morphhb) — WLC Ruth, OSIS XML",
+      "note": "Added for the NEW-02 split redesign: Ruth is an independent Hebrew book held out entirely as the Hebrew TEST partition (never in train or validation), giving the Hebrew profile a genuine held-out test set.",
+      "partition_strategy": "Ruth is assigned to the test partition in full (book-group split): a held-out independent document for Hebrew model evaluation.",
+      "sha256": "fb6a2660383c7176941cb87b2be182ef634b66d49d057635869f4d9cb1f0a11e",
+      "source_edition": "Westminster Leningrad Codex (WLC) via Open Scriptures morphhb (OSHB)",
+      "url": "https://raw.githubusercontent.com/openscriptures/morphhb/master/wlc/Ruth.xml"
     }
   ],
   "generated_for": "Corpus retrieval work: real downloaded sources with checksums and licences. Corpus data files live outside source control (artifacts/corpora/ is gitignored); this manifest is the provenance record. Counts below come from the importer's parse report at download time (data preparation, not a quality measurement).",
   "import_report": {
-    "aligned_english": 2165,
+    "aligned_english": 2250,
     "by_language": {
       "biblical_aramaic": 267,
-      "biblical_hebrew": 1903
+      "biblical_hebrew": 1988
     },
     "by_partition_pairs": {
       "biblical_aramaic": {
-        "test": 196,
+        "test": 150,
         "train": 67,
-        "validation": 0
+        "validation": 46
       },
       "biblical_hebrew": {
-        "test": 0,
+        "test": 85,
         "train": 906,
         "validation": 996
       }
     },
     "by_partition_verses": {
       "biblical_aramaic": {
-        "test": 200,
+        "test": 154,
         "train": 67,
-        "validation": 0
+        "validation": 46
       },
       "biblical_hebrew": {
-        "test": 0,
+        "test": 85,
         "train": 906,
         "validation": 997
       }
     },
+    "corpus_sha256": "5ec1bc2f25f1f2f43ede1041ee63f1ae347bd4d715ed1a344bb69254728ce69c",
     "duplicates_skipped": 0,
-    "note": "Parse counts recorded when the importer ran as data preparation after the Ezra import and book-group partition redesign (AHAIET-008). Ezra adds 280 verses (213 Hebrew, 67 Aramaic, all with aligned English). Consequence recorded honestly: the Hebrew profile now has no test-partition verses (Daniel Hebrew moved to validation), so the evaluation gate reports insufficient_test_data for Hebrew until a held-out Hebrew source is added; Aramaic has train 67 / test 196 pairs and no validation partition. Database import (--import-db) and all test suites are run by the developer; see docs/VERIFICATION.md.",
+    "leakage_check": "training/datasets/prepare_parallel.py run as data preparation over the new assignment: group integrity keyed by (language, book, chapter) passed, exact and diacritic-insensitive cross-split duplicate checks passed, 0 near-duplicates flagged (threshold 0.9).",
+    "note": "Parse counts recorded when the importer ran as data preparation after the NEW-01/NEW-02 split redesign. Ruth adds 85 Hebrew verses, all with aligned English, held out as the Hebrew test partition. Daniel Aramaic is split by chapter groups: chapter 2 (46 verses/pairs) validation, chapters 3-7 (154 verses, 150 pairs) test; Aramaic training remains Ezra-only (67 pairs), far below the Marian 500-pair data gate, which stays documented and unmet. Both profiles now have nonempty train/validation/test partitions. Database import (--import-db) and all test suites are run by the developer; see docs/VERIFICATION.md.",
     "tool": "backend: python -m app.corpus.import_morphhb",
     "validation_errors": [],
-    "verses_parsed": 2170,
+    "verses_parsed": 2255,
     "verses_without_english": [
       "Genesis 32:33",
       "Daniel 3:31",

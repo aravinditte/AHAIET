@@ -119,12 +119,16 @@ def test_variant_shortlist_uses_token_index(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_preserve_blank_lines():
+    # NEW-25: exact assertions — no tolerating or-branches.
     text = "line one\n\n\nline two\n"
     seg = split_segments(text)
     out = reassemble(["t1", "t2"], seg)
-    assert out == "t1\n\n\nt2\n".rstrip("\n") or out.split("\n")[:4] == ["t1", "", "", "t2"]
+    assert out == "t1\n\n\nt2\n"
+    assert out.split("\n") == ["t1", "", "", "t2", ""]
     leading = split_segments("\n\nline one")
-    assert reassemble(["t1"], leading).startswith("\n\n")
+    assert reassemble(["t1"], leading) == "\n\nt1"
+    trailing = split_segments("line one\n\n")
+    assert reassemble(["t1"], trailing) == "t1\n\n"
     partial = split_segments("line one\n\nline two")
     assert reassemble(["t1", None], partial) == "t1\n\n"
 
@@ -236,6 +240,13 @@ def _artifact(tmp_path: Path, engine: str, files: dict[str, bytes],
             "artifact_sha256": hashlib.sha256(files[primary]).hexdigest(),
             "files": described, "dataset_card_sha256": None,
             "dataset_id": "parallel-test", "metrics": metrics}
+    if metrics and metrics.get("chrf_pp") is not None:
+        # NEW-14: a score counts only with a valid run record.
+        card["evaluation_run"] = {
+            "run_id": "test-fixture-run", "test_set_sha256": "cd" * 32,
+            "sample_count": 50,
+            "metric_signature": "sacrebleu-test:CHRF(word_order=2)+BLEU",
+            "artifact_sha256": card["artifact_sha256"], "date": "2026-11-24"}
     (d / "model_card.json").write_text(json.dumps(card), encoding="utf-8")
     return {"id": f"{engine}-biblical-hebrew-en", "kind": "translation",
             "engine": engine, "language_profile": "biblical_hebrew",
@@ -287,22 +298,22 @@ def test_missing_best_decoder_tries_second_same_profile(tmp_path, monkeypatch):
     s = _S(storage_dir=tmp_path / "up", db_path=tmp_path / "t.db",
            models_manifest=manifest, datasets_manifest=tmp_path / "d.json",
            marian_decoder_cmd="ahaiet-no-such-marian-binary",
-           moses_cmd=str(_echo_binary(tmp_path)))
+           # NEW-05: the healthy engine is a genuinely executable
+           # double, configured as a command vector.
+           moses_cmd=_echo_vector())
     out = tservice.translate("some source text", s, "biblical_hebrew")
     assert out["translation_method"] == "moses"
+    # The echo double really ran: its EN: prefix is in the output.
+    assert out["english_translation"].startswith("EN:")
     assert any("marian" in w.lower() and "failed" in w.lower() for w in out["warnings"])
 
 
-def _echo_binary(tmp_path: Path) -> Path:
-    """A portable echo decoder via sys.executable (AHAIET-048): works
-    on Windows and POSIX, unlike a shebang script."""
+def _echo_vector() -> list:
+    """The echo decoder as a command VECTOR (NEW-05):
+    [sys.executable, doubles/echo_decoder.py] — genuinely executable
+    on Windows and POSIX, unlike a bare .py path used as a binary."""
     helper = Path(__file__).parent / "doubles" / "echo_decoder.py"
-    wrapper = tmp_path / "echo_moses.py"
-    wrapper.write_text(
-        "import subprocess, sys\n"
-        f"sys.exit(subprocess.call([sys.executable, {str(helper)!r}] + sys.argv[1:]))\n",
-        encoding="utf-8")
-    return wrapper
+    return [sys.executable, str(helper)]
 
 
 def test_decoder_empty_output_is_error(tmp_path):
@@ -534,15 +545,31 @@ def test_access_token_required_when_configured(tmp_path):
     assert ok.status_code == 200
 
 
-def test_translate_lineage_original_null_without_ocr(client):
-    # AHAIET-026: without OCR context, original_ocr_text is null —
-    # never a copy of the input text.
+def test_translate_lineage_original_null_without_ocr(client, settings):
+    # AHAIET-026 + NEW-25: the positive path uses a REAL reference
+    # match from a fixture corpus and asserts 200 + lineage fields —
+    # no tolerating failure branches.
+    _insert_passage(settings.db_path, "p1", "biblical_hebrew", HEBREW_A,
+                    "In the beginning God created", "Genesis 1:1")
     r = client.post("/api/translate", json={"text": HEBREW_A,
                                             "source_language": "biblical_hebrew"})
-    # No corpus in the test DB: the request fails honestly, so assert
-    # the lineage rule on the service-shaped success path instead.
-    if r.status_code == 200:
-        assert r.json()["original_ocr_text"] is None
-        assert r.json()["corrected_source_text"] == HEBREW_A
-    else:
-        assert r.status_code in (422, 503)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["original_ocr_text"] is None
+    assert body["corrected_source_text"] == HEBREW_A
+    assert body["translation_method"] == "verified_reference"
+
+
+def test_translate_lineage_with_ocr_context(client, settings):
+    # With OCR context, the raw text is preserved verbatim and the
+    # corrected text is what was translated (AHAIET-026).
+    _insert_passage(settings.db_path, "p1", "biblical_hebrew", HEBREW_A,
+                    "In the beginning God created", "Genesis 1:1")
+    raw = "garbled raw ocr text"
+    r = client.post("/api/translate", json={
+        "text": HEBREW_A, "corrected_source_text": HEBREW_A,
+        "original_ocr_text": raw, "source_language": "biblical_hebrew"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["original_ocr_text"] == raw
+    assert body["corrected_source_text"] == HEBREW_A

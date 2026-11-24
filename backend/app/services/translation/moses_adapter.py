@@ -13,13 +13,12 @@ WSL2-first workflow); runtime inference never requires WSL2 — only a
 locally installed moses binary (AHAIET_MOSES_CMD or PATH).
 """
 from __future__ import annotations
-import shutil
 import subprocess
 
 from app.core.config import Settings
 from app.core.errors import AppError, UnavailableError, sanitize_detail
 from app.services.language.tokenize import detokenize_target, tokenize_source_line
-from . import decoder_output, model_artifacts
+from . import command as decoder_command, decoder_output, model_artifacts
 from .model_artifacts import ArtifactResolution
 
 
@@ -42,17 +41,23 @@ def run(entry: dict, text: str, settings: Settings, timeout_s: float | None = No
             "Missing: " + "; ".join(resolution.missing) +
             f" (artifact directory: {resolution.artifact_dir}). "
             "Train and export a model first (docs/TRAINING.md), then update artifacts/manifests/models.json.")
-    exe = settings.moses_cmd if settings and settings.moses_cmd else "moses"
-    if not _is_executable(exe):
+    argv = decoder_command.resolve_command(
+        settings.moses_cmd if settings and settings.moses_cmd else "moses")
+    if not decoder_command.command_available(argv):
         raise UnavailableError(
             "moses_unavailable",
             "The Moses decoder binary was not found, so no translation was produced.",
-            f"Looked for '{exe}'. Install Moses locally or set AHAIET_MOSES_CMD to the decoder path.")
+            f"Looked for '{decoder_command.display_command(argv)}'. Install Moses locally "
+            "or set AHAIET_MOSES_CMD to the decoder path (or a command vector).")
     ini = model_artifacts.card_file(resolution, ("config",), ("moses.ini",))
     tokenized = tokenize_source_line(text)
     try:
-        proc = subprocess.run([exe, "-f", str(ini)], input=tokenized + "\n",
+        # NEW-13: the decoder runs with the artifact directory as its
+        # working directory, so relative paths inside moses.ini
+        # resolve against the exported artifact, not the server's CWD.
+        proc = subprocess.run([*argv, "-f", str(ini)], input=tokenized + "\n",
                               capture_output=True, text=True,
+                              cwd=str(resolution.artifact_dir),
                               timeout=_timeout(settings, timeout_s))
     except subprocess.TimeoutExpired:
         raise AppError(504, "translation_timeout",
@@ -81,16 +86,18 @@ def run_batch(entry: dict, texts: list[str], settings: Settings,
             "moses_unavailable",
             "The Moses SMT artifact for this language profile is incomplete, so no translation was produced.",
             "Missing: " + "; ".join(resolution.missing))
-    exe = settings.moses_cmd if settings and settings.moses_cmd else "moses"
-    if not _is_executable(exe):
+    argv = decoder_command.resolve_command(
+        settings.moses_cmd if settings and settings.moses_cmd else "moses")
+    if not decoder_command.command_available(argv):
         raise UnavailableError("moses_unavailable",
                                "The Moses decoder binary was not found, so no translation was produced.",
-                               f"Looked for '{exe}'.")
+                               f"Looked for '{decoder_command.display_command(argv)}'.")
     ini = model_artifacts.card_file(resolution, ("config",), ("moses.ini",))
     payload = "\n".join(tokenize_source_line(t) for t in texts) + "\n"
     try:
-        proc = subprocess.run([exe, "-f", str(ini)], input=payload,
+        proc = subprocess.run([*argv, "-f", str(ini)], input=payload,
                               capture_output=True, text=True,
+                              cwd=str(resolution.artifact_dir),
                               timeout=_timeout(settings, timeout_s))
     except subprocess.TimeoutExpired:
         raise AppError(504, "translation_timeout",
@@ -108,8 +115,12 @@ def run_batch(entry: dict, texts: list[str], settings: Settings,
             for line, text in zip(lines, texts)]
 
 
-def _is_executable(exe: str) -> bool:
-    return shutil.which(exe) is not None
+def _is_executable(exe) -> bool:
+    """Backwards-compatible helper; command vectors are supported."""
+    try:
+        return decoder_command.command_available(decoder_command.resolve_command(exe))
+    except Exception:
+        return False
 
 
 def _result(resolution: ArtifactResolution, english: str, coverage: dict | None) -> dict:

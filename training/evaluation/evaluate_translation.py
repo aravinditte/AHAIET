@@ -202,6 +202,7 @@ def evaluate(profile: str, prepared_dir: Path, corpus_path: Path, db_path: Path,
     impl_name, impl = metric_impl()
     references = [p["english_text"] for p in pairs]
     report: dict = {
+        "run_id": uuid.uuid4().hex,
         "profile": profile, "generated_by": "training/evaluation/evaluate_translation.py",
         "date": date.today().isoformat(), "test_pairs": len(pairs),
         "metric_implementation": impl_name,
@@ -286,14 +287,71 @@ def evaluate(profile: str, prepared_dir: Path, corpus_path: Path, db_path: Path,
     return report
 
 
-def write_selection(report: dict, settings: Settings) -> dict | None:
-    """Record the winning trained engine in its model card + manifest.
+def _archive_profile_metrics(report: dict, settings: Settings,
+                             manifest: dict, keep_engine: str | None) -> None:
+    """NEW-14: an evaluation run invalidates prior metrics on EVERY
+    engine card for the profile — winner and losers alike. Old scores
+    are moved under metrics_history with status "stale" and the
+    superseding run id; nothing from a previous run remains readable
+    as a current score."""
+    superseded_by = report.get("run_id") or report.get("date")
+    for entry in manifest.get("models", []):
+        if entry.get("kind") != "translation" or entry.get("language_profile") != report["profile"]:
+            continue
+        if entry.get("engine") == keep_engine:
+            continue
+        old_eval = entry.get("evaluation")
+        if isinstance(old_eval, dict) and old_eval:
+            history = entry.setdefault("metrics_history", [])
+            history.append({**old_eval, "status": "stale",
+                            "superseded_by": superseded_by,
+                            "superseded_at": report["date"]})
+            entry.pop("evaluation", None)
+        if isinstance(entry.get("selection"), dict):
+            entry["selection"] = {"selected": False,
+                                  "reason": "superseded by a newer evaluation run",
+                                  "superseded_by": superseded_by,
+                                  "date": report["date"]}
+        resolution = model_artifacts.resolve_entry(entry)
+        if resolution.artifact_dir is not None:
+            card_path = resolution.artifact_dir / "model_card.json"
+            if card_path.exists():
+                card = load_json(card_path)
+                changed = False
+                if isinstance(card.get("metrics"), dict) and card["metrics"]:
+                    card.setdefault("metrics_history", []).append(
+                        {**card["metrics"], "status": "stale",
+                         "superseded_by": superseded_by,
+                         "superseded_at": report["date"]})
+                    card.pop("metrics", None)
+                    changed = True
+                if card.get("evaluation_run") is not None:
+                    card["evaluation_run"] = None
+                    changed = True
+                if isinstance(card.get("selection"), dict):
+                    card["selection"] = {"selected": False,
+                                         "reason": "superseded by a newer evaluation run",
+                                         "superseded_by": superseded_by,
+                                         "date": report["date"]}
+                    changed = True
+                if changed:
+                    write_json(card_path, card)
 
-    Refuses (returns None and writes nothing) when the report is gated
-    insufficient_test_data (AHAIET-005), and compares only scores that
-    carry an evaluation-run record with THIS report's test-set sha256
-    and metric signature and a chrF++ value (AHAIET-006): fallback chrF
-    scores are not comparable and can never drive selection."""
+
+def write_selection(report: dict, settings: Settings) -> dict | None:
+    """Record the selected trained engine in its model card + manifest.
+
+    Policy (NEW-04): a single qualifying engine MAY be selected, but
+    the record is labelled selection_basis="single_evaluated_engine"
+    with comparable=False; only when at least two engines qualify on
+    THIS run's signature does the record say "head_to_head" with
+    comparable=True. Candidates qualify only with an evaluation-run
+    record matching this report's test-set sha256 and metric
+    signature and a chrF++ value (AHAIET-006): fallback chrF scores
+    never drive selection. Refuses to select (returns None) when the
+    report is gated insufficient_test_data (AHAIET-005) or no engine
+    qualifies — but a completed run still archives stale metrics on
+    every engine card for the profile (NEW-14)."""
     if report.get("status") == "insufficient_test_data":
         return None
     candidates = []
@@ -305,10 +363,15 @@ def write_selection(report: dict, settings: Settings) -> dict | None:
                 and run.get("test_set_sha256") == report.get("test_set_sha256")
                 and run.get("metric_signature") == report.get("metric_signature")):
             candidates.append((engine, metrics["chrf_pp"]))
+    manifest = load_models_manifest(settings)
     if not candidates:
+        _archive_profile_metrics(report, settings, manifest, keep_engine=None)
+        write_json(settings.models_manifest, manifest)
         return None
     winner, winner_chrf = max(candidates, key=lambda c: c[1])
-    manifest = load_models_manifest(settings)
+    basis = "head_to_head" if len(candidates) >= 2 else "single_evaluated_engine"
+    comparable = len(candidates) >= 2
+    _archive_profile_metrics(report, settings, manifest, keep_engine=winner)
     for entry in manifest.get("models", []):
         if entry.get("kind") != "translation" or entry.get("language_profile") != report["profile"]:
             continue
@@ -318,16 +381,9 @@ def write_selection(report: dict, settings: Settings) -> dict | None:
                               "date": report["date"],
                               "evaluated_by": "training/evaluation/evaluate_translation.py",
                               "test_pairs": report["test_pairs"],
+                              "selection_basis": basis if is_winner else None,
+                              "comparable": comparable if is_winner else False,
                               "run": report["engines"][winner].get("evaluation_run")}
-        # Stale-metric hygiene: a previous evaluation record that does
-        # not belong to this run's test set is versioned aside, never
-        # left in place to be read as current (AHAIET-006).
-        old_eval = entry.get("evaluation")
-        if isinstance(old_eval, dict):
-            old_run = old_eval.get("run") or {}
-            if old_run.get("test_set_sha256") != report.get("test_set_sha256"):
-                entry["evaluation_stale"] = old_eval
-                entry.pop("evaluation", None)
         if is_winner:
             entry["evaluation"] = {"chrf_pp": winner_chrf, "date": report["date"],
                                    "test_pairs": report["test_pairs"],
@@ -345,7 +401,8 @@ def write_selection(report: dict, settings: Settings) -> dict | None:
                     card["selection"] = entry["selection"]
                     write_json(card_path, card)
     write_json(settings.models_manifest, manifest)
-    return {"winner": winner, "chrf_pp": winner_chrf}
+    return {"winner": winner, "chrf_pp": winner_chrf,
+            "selection_basis": basis, "comparable": comparable}
 
 
 def render_markdown(report: dict, selection_record: dict | None) -> str:
@@ -376,8 +433,12 @@ def render_markdown(report: dict, selection_record: dict | None) -> str:
                   "its scores are a lexical floor, not translation quality.", ""]
     if selection_record:
         lines += [f"**Selected engine for this profile:** {selection_record['winner']} "
-                  f"(recorded chrF++ {selection_record['chrf_pp']}). The record was written "
-                  "into the model card and the models manifest by this run.", ""]
+                  f"(recorded chrF++ {selection_record['chrf_pp']}; selection basis: "
+                  f"{selection_record.get('selection_basis', 'head_to_head')}"
+                  + ("" if selection_record.get("comparable", True) else
+                     " — a single evaluated engine, NOT a head-to-head comparison")
+                  + "). The record was written into the model card and the models "
+                  "manifest by this run.", ""]
     else:
         lines += ["**Selected engine:** none recorded — no trained engine was evaluated in "
                   "this run, so the backend keeps its documented default order and honest "

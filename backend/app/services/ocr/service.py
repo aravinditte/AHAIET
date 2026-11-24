@@ -45,12 +45,16 @@ def ocr_status(settings: Settings) -> dict:
     data_ok = probe["language_data_available"]
     tesseract_ready = probe["usable"]
     kraken = kraken_adapter.status(settings)
-    matrix = script_profiles.support_matrix(settings, tesseract_ready)
+    matrix = script_profiles.support_matrix(settings, tesseract_ready,
+                                            tesseract_probe=probe)
     any_supported = any(row["status"] == "supported" for row in matrix)
     return {
         "tesseract": {"available": tess,
                       "binary_available": probe["binary_available"],
                       "language_data_available": probe["language_data_available"],
+                      "language_data_file_present": probe.get("language_data_file_present", False),
+                      "probe_failed": probe.get("probe_failed", False),
+                      "probe_reason": probe.get("reason"),
                       "usable": probe["usable"],
                       "languages": probe["languages"],
                       "path": tesseract_adapter.tesseract_path(settings.tesseract_cmd),
@@ -231,13 +235,38 @@ def _run_ocr_bounded(image_path: Path, settings: Settings, language_profile: str
                        "Try the 'enhanced' preprocessing profile, a higher-resolution image, or check the image actually contains text in the selected script.")
     threshold = settings.ocr_confidence_threshold
     words = result.pop("_words")
+    # NEW-21: authoritative token offsets for EVERY word, in Unicode
+    # code points within the raw OCR text. Tesseract words carry
+    # exact offsets from the TSV assembly (parse_tsv); Kraken words
+    # are located by assembly order (each word searched from the
+    # running cursor, so repeated words resolve to successive
+    # occurrences). A word that cannot be located gets null offsets
+    # and the UI marks its highlighting approximate.
+    tokens: list[dict] = []
+    cursor = 0
+    for i, w in enumerate(words):
+        start, end = w.get("char_start"), w.get("char_end")
+        if start is None or end is None:
+            found = text.find(w["text"], cursor)
+            if found >= 0:
+                start, end = found, found + len(w["text"])
+        if start is not None:
+            cursor = max(cursor, end)
+        tokens.append({"index": i, "text": w["text"],
+                       "char_start": start, "char_end": end,
+                       "offset_encoding": "unicode_code_points",
+                       "line": w.get("line"), "conf": w.get("conf")})
+    result["tokens"] = tokens
+    result["offset_encoding"] = "unicode_code_points"
     # AHAIET-028/040: every span carries its token occurrence identity
     # (global word index in TSV order, block/par/line ids, and a
-    # composite occurrence_id) so the UI highlights the exact
-    # occurrence, never the first identical string.
+    # composite occurrence_id) plus its NEW-21 offsets, so the UI
+    # highlights the exact occurrence by slicing the raw text.
     result["uncertain_spans"] = [
         {"text": w["text"], "conf": w["conf"],
          "index": i, "occurrence_id": f"w{i}",
+         "char_start": tokens[i]["char_start"], "char_end": tokens[i]["char_end"],
+         "offset_encoding": "unicode_code_points",
          "block": w.get("block"), "par": w.get("par"),
          "line": w["line"], "line_id": f"b{w.get('block', 0)}p{w.get('par', 0)}l{w['line']}",
          "left": w["left"], "top": w["top"], "width": w["width"], "height": w["height"]}

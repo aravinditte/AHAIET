@@ -77,6 +77,14 @@ CREATE TABLE IF NOT EXISTS maintenance_runs (
 ALTER TABLE jobs ADD COLUMN expires_at TEXT;
 ALTER TABLE jobs ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0;
 """),
+    # Job ownership and heartbeat (NEW-15): a job row records which
+    # worker instance owns it and when that worker last heartbeated,
+    # so startup recovery can fail only definitely-orphaned jobs
+    # instead of every non-terminal row in a shared database.
+    (5, """
+ALTER TABLE jobs ADD COLUMN owner_id TEXT;
+ALTER TABLE jobs ADD COLUMN heartbeat_at TEXT;
+"""),
 ]
 PROFILES = [
     ("biblical_hebrew", "Biblical Hebrew", "Hebrew", "profile_defined_models_not_provisioned", "Consonantal and vocalized (niqqud) text; cantillation where present."),

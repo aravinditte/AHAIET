@@ -27,7 +27,7 @@ See docs/DATASETS.md. No invented scholarly corpus entries, ever.
 - Retrieval and morphology never cross language profiles. Hebrew morphology data is never applied to Aramaic words or vice versa.
 - /api/translate order: verified corpus reference -> provisioned local model -> honest unavailable. The unavailable message distinguishes "corpus present, no match" from "no corpus imported".
 - Trained-model readiness is derived, never asserted: a manifest entry counts only when its artifact directory, model card, every card-listed file, and the engine's essential pieces are present on disk; missing pieces are named in errors and in /api/models. "evaluated" requires a chrF++ value recorded by the evaluation harness in the model card or manifest; otherwise a complete artifact is "trained_but_not_evaluated".
-- Engine selection per profile: verified retrieval first; among trained engines, the higher recorded chrF++ on the shared held-out test split wins; with no recorded metrics the default order is Moses SMT before Marian NMT. Selection is read from model cards/manifest records written by real runs — never hardcoded quality claims, and never carried across profiles.
+- Engine selection per profile: verified retrieval first; among trained engines, the higher recorded chrF++ on the shared held-out test split wins when at least two engines share a run signature (selection_basis "head_to_head"); a single qualifying engine may be selected with the record labelled selection_basis "single_evaluated_engine", comparable=false; with no recorded metrics the default order is Moses SMT before Marian NMT. Selection is read from model cards/manifest records written by real runs — never hardcoded quality claims, and never carried across profiles.
 - Training data integrity: splits are passage-group (book/chapter) blocks from the recorded strategy; exact or diacritic-insensitive duplicates across splits are hard failures; verses with empty aligned English are excluded and counted. The dictionary gloss baseline is labelled "not a sentence translation" wherever it appears and is never served to users as a translation. Retrieval scores on the corpus's own test split are always reported with the upper-bound caveat.
 - Tokenization is single-sourced (backend/app/services/language/tokenize.py): training files and runtime inference use the same implementation; the vocalized view is canonical and diacritics are never stripped outside the explicitly labelled consonantal view.
 - OCR: both Hebrew-script profiles use the heb traineddata and record the profile used; Syriac traineddata is never substituted for Hebrew-script Aramaic. Uncertainty comes only from the engine's own TSV confidences.
@@ -52,10 +52,12 @@ See docs/DATASETS.md. No invented scholarly corpus entries, ever.
   `text_match` and `passage_identity_verified` are separate facts.
 - **Evaluation comparability.** A score exists only with its
   evaluation-run record (test-set sha256, sample count, metric
-  signature, artifact sha256). Selection compares only identical
-  test-set + signature runs; stale scores are ignored and flagged; an
-  empty/below-minimum test partition is `insufficient_test_data` and
-  writes no selection.
+  signature, artifact sha256, date). Head-to-head comparison uses
+  only identical test-set + signature runs; a single qualifying
+  engine may still be selected, labelled non-comparable (see the
+  selection rule above); stale scores are archived on every card for
+  the profile and flagged; an empty/below-minimum test partition is
+  `insufficient_test_data` and writes no selection.
 - **Job state machine.** /api/process jobs move only
   queued -> running_ocr -> running_translation ->
   completed | partial | failed | cancelled (plus `expired` for

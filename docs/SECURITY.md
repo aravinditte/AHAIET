@@ -139,7 +139,14 @@ image in local mode. That is acceptable for a single-operator local
 tool and nothing else. If the service is ever exposed beyond loopback,
 set `AHAIET_ACCESS_TOKEN`: upload reads (`GET /api/uploads/{id}`) and
 history (`GET /api/history`) then require the
-`X-AHAIET-Access-Token` header. For real remote deployment, put the
+`X-AHAIET-Access-Token` header. Since the re-review remediation
+(NEW-12) the guard covers the full document/result matrix: uploads
+read, process submission, job read/result/cancel, and history
+read/delete (see docs/API.md). The browser UI keeps the token only
+in sessionStorage — never in a build-time variable or a URL — and
+sends it as a header on API calls; the image preview is fetched as a
+Blob through an authenticated request because an <img> tag cannot
+send headers (NEW-11). For real remote deployment, put the
 service behind external authentication as well; the token is a
 minimal local safeguard, not an auth system.
 

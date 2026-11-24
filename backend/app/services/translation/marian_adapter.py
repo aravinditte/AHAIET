@@ -13,12 +13,11 @@ Training/fine-tuning happens outside the backend
 (training/nmt/train_nmt.py); this adapter never downloads anything.
 """
 from __future__ import annotations
-import shutil
 import subprocess
 
 from app.core.config import Settings
 from app.core.errors import AppError, UnavailableError, sanitize_detail
-from . import decoder_output, model_artifacts
+from . import command as decoder_command, decoder_output, model_artifacts
 from .model_artifacts import ArtifactResolution
 
 
@@ -41,19 +40,24 @@ def run(entry: dict, text: str, settings: Settings, timeout_s: float | None = No
             "Missing: " + "; ".join(resolution.missing) +
             f" (artifact directory: {resolution.artifact_dir}). "
             "Train and export a model first (docs/TRAINING.md), then update artifacts/manifests/models.json.")
-    exe = settings.marian_decoder_cmd if settings and settings.marian_decoder_cmd else "marian-decoder"
-    if shutil.which(exe) is None:
+    argv = decoder_command.resolve_command(
+        settings.marian_decoder_cmd if settings and settings.marian_decoder_cmd else "marian-decoder")
+    if not decoder_command.command_available(argv):
         raise UnavailableError(
             "marian_unavailable",
             "The marian-decoder binary was not found, so no translation was produced.",
-            f"Looked for '{exe}'. Install Marian locally or set AHAIET_MARIAN_DECODER_CMD to the decoder path.")
+            f"Looked for '{decoder_command.display_command(argv)}'. Install Marian locally "
+            "or set AHAIET_MARIAN_DECODER_CMD to the decoder path (or a command vector).")
     decoder_config = model_artifacts.card_file(
         resolution, ("decoder_config",), ("decoder-config.yml", "config-decoder.yml", "decoder_config.yml"))
     # Marian reads running text line by line; a passage is one line.
     single_line = " ".join((text or "").split())
     try:
-        proc = subprocess.run([exe, "-c", str(decoder_config)], input=single_line + "\n",
+        # NEW-13: cwd = the artifact directory, so the relative
+        # model/vocab paths in the decoder config resolve there.
+        proc = subprocess.run([*argv, "-c", str(decoder_config)], input=single_line + "\n",
                               capture_output=True, text=True,
+                              cwd=str(resolution.artifact_dir),
                               timeout=_timeout(settings, timeout_s))
     except subprocess.TimeoutExpired:
         raise AppError(504, "translation_timeout",
@@ -105,17 +109,19 @@ def run_batch(entry: dict, texts: list[str], settings: Settings,
             "marian_unavailable",
             "The Marian NMT artifact for this language profile is incomplete, so no translation was produced.",
             "Missing: " + "; ".join(resolution.missing))
-    exe = settings.marian_decoder_cmd if settings and settings.marian_decoder_cmd else "marian-decoder"
-    if shutil.which(exe) is None:
+    argv = decoder_command.resolve_command(
+        settings.marian_decoder_cmd if settings and settings.marian_decoder_cmd else "marian-decoder")
+    if not decoder_command.command_available(argv):
         raise UnavailableError("marian_unavailable",
                                "The marian-decoder binary was not found, so no translation was produced.",
-                               f"Looked for '{exe}'.")
+                               f"Looked for '{decoder_command.display_command(argv)}'.")
     decoder_config = model_artifacts.card_file(
         resolution, ("decoder_config",), ("decoder-config.yml", "config-decoder.yml", "decoder_config.yml"))
     payload = "\n".join(" ".join((t or "").split()) for t in texts) + "\n"
     try:
-        proc = subprocess.run([exe, "-c", str(decoder_config)], input=payload,
+        proc = subprocess.run([*argv, "-c", str(decoder_config)], input=payload,
                               capture_output=True, text=True,
+                              cwd=str(resolution.artifact_dir),
                               timeout=_timeout(settings, timeout_s))
     except subprocess.TimeoutExpired:
         raise AppError(504, "translation_timeout",

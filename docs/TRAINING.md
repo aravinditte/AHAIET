@@ -247,3 +247,32 @@ record is produced.
   the tools themselves, never written by hand.
 - Corpora and model binaries stay outside source control; manifests
   and cards are the provenance record.
+
+## Decoder commands, working directory, and artifact layout (NEW-05, NEW-13, NEW-27)
+
+- **Command forms.** `AHAIET_MOSES_CMD` / `AHAIET_MARIAN_DECODER_CMD`
+  accept three forms, resolved by
+  `backend/app/services/translation/command.py` with no shell: a plain
+  program name/path, an shlex-split string (arguments allowed), or a
+  JSON list in the environment / a list in settings — the command
+  VECTOR form, e.g. `["/usr/bin/python3", "/path/to/decoder.py"]`.
+  The vector form is what tests use with genuinely executable doubles
+  (`backend/tests/double_factory.py` writes a shebang + chmod 0o755
+  script on POSIX and a `.cmd` wrapper on Windows).
+- **Working directory.** Both adapters launch the decoder with
+  `cwd=<artifact_dir>`, so relative paths inside exported configs
+  resolve against the artifact itself. Training exports additionally
+  write ABSOLUTE paths (the exported `moses.ini` entries and the
+  Marian `decoder-config.yml` model/vocab paths), and export
+  verification resolves every referenced path from an unrelated
+  working directory — an artifact must be movable as a directory.
+- **Integrity.** Resolution results are cached only within the
+  integrity TTL (`AHAIET_ARTIFACT_INTEGRITY_TTL_S`, default 300s) and
+  only while the artifact signature is unchanged.
+  `verify_artifacts(settings, force=True)` — run at startup and
+  available to operators/tests — always rehashes file CONTENT, so a
+  same-size in-place edit with a restored mtime is caught.
+- **Recommended layout.** Immutable artifact directories named by
+  content hash — `artifacts/models/<engine>/<profile>/<sha-prefix>/`
+  — activated by pointing the manifest entry at the new directory,
+  never by editing files in place inside a live artifact.

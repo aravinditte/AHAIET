@@ -1,4 +1,7 @@
 from __future__ import annotations
+import logging
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -30,18 +33,48 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             logging.getLogger("ahaiet.retention").error(
                 "retention sweep failed at startup: %s: %s",
                 type(e).__name__, e)
-    app = FastAPI(title="AHAIET Backend", version="0.1.0")
+    # NEW-22: Pillow's global decompression-bomb limit is set ONCE,
+    # here at startup from configuration — never mutated per request.
+    # Per-request enforcement is the explicit pixel ceiling checked in
+    # validate_and_decode.
+    from PIL import Image as _PILImage
+    _PILImage.MAX_IMAGE_PIXELS = s.upload_max_pixels
+    # NEW-27: artifact integrity is verified at startup (content
+    # rehash, not the mtime/size cache fast path).
+    try:
+        from app.services.translation import model_artifacts
+        model_artifacts.verify_artifacts(s, force=True)
+    except Exception as e:
+        logging.getLogger("ahaiet.integrity").error(
+            "artifact integrity verification failed at startup: %s: %s",
+            type(e).__name__, e)
+    from app.services import job_runner
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        # Background job lifecycle (AHAIET-009; NEW-15): startup
+        # recovery runs in the lifespan, fails ONLY jobs whose
+        # heartbeat is stale (a live job owned by another instance is
+        # never touched), and any recovery failure is logged
+        # structurally and surfaced on app state — never swallowed.
+        try:
+            job_runner.recover_orphaned_jobs(s)
+        except Exception as e:
+            app.state.job_recovery_degraded = True
+            logging.getLogger("ahaiet.jobs").error(
+                "orphaned-job recovery failed at startup: %s: %s",
+                type(e).__name__, e)
+        yield
+        # Graceful executor shutdown on lifespan exit.
+        manager = getattr(app.state, "job_manager", None)
+        if manager is not None:
+            manager.shutdown()
+
+    app = FastAPI(title="AHAIET Backend", version="0.1.0", lifespan=lifespan)
     app.state.settings = s
     app.state.retention_degraded = retention_degraded
-    # Background job lifecycle (AHAIET-009): bounded executor +
-    # startup recovery of orphaned jobs (marked failed,
-    # worker_restarted) before the first request is served.
-    from app.services import job_runner
+    app.state.job_recovery_degraded = False
     app.state.job_manager = job_runner.JobManager(s)
-    try:
-        job_runner.recover_orphaned_jobs(s)
-    except Exception:
-        pass
     # CORS: only the configured local origins, never a wildcard by
     # default (AHAIET_CORS_ORIGINS overrides). The frontend is a local
     # app talking to a local backend; nothing else needs access.

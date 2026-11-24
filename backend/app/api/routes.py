@@ -35,11 +35,14 @@ def _manager(request: Request) -> job_runner.JobManager:
     return manager
 
 def _require_access(request: Request) -> None:
-    """AHAIET-045: when AHAIET_ACCESS_TOKEN is configured, upload reads
-    and history require the X-AHAIET-Access-Token header. Unset means
-    local single-operator mode (the documented default posture is a
-    loopback bind; a content-hash upload id is a locator, not an
-    authorization credential — see docs/SECURITY.md)."""
+    """Token guard (AHAIET-045; NEW-12): when AHAIET_ACCESS_TOKEN is
+    configured, EVERY document/result endpoint requires the
+    X-AHAIET-Access-Token header — upload reads, job create / read /
+    result / cancel, process submission, and history read / delete.
+    Job ids and content-hash upload ids are locators, not
+    authorization. Unset means local single-operator mode (the
+    documented default posture is a loopback bind; CORS does not
+    authenticate requests — see docs/SECURITY.md)."""
     s = _settings(request)
     if s.access_token:
         supplied = request.headers.get("x-ahaiet-access-token")
@@ -142,10 +145,36 @@ def _provisioning_state(s: Settings, ocr: dict, corpus: dict, any_model: bool) -
             "note": "offline_benchmark_passed is recorded only by a real offline "
                     "benchmark run (docs/PROVISIONING.md); it is never inferred."}
 
+def _profile_translation_status(settings: Settings, profile: str,
+                                counts_by_language: dict) -> str:
+    """Per-profile translation status from LIVE state (NEW-18),
+    sharing the capabilities computation (per_profile_readiness):
+    retrieval_available (corpus imported for the profile) /
+    model_evaluated (a run-evidenced engine is selected) /
+    model_installed_unevaluated (a complete artifact exists without a
+    valid recorded score) / not_provisioned."""
+    if counts_by_language.get(profile):
+        return "retrieval_available"
+    readiness = model_selection.per_profile_readiness(settings, counts_by_language)
+    info = readiness.get(profile, {})
+    if info.get("evaluation_state") == "evaluated":
+        return "model_evaluated"
+    if info.get("engine"):
+        return "model_installed_unevaluated"
+    return "not_provisioned"
+
+
 @router.get("/languages")
-def languages():
-    out = [{"id": "biblical_hebrew", "name": "Biblical Hebrew", "script": "Hebrew", "status": "profile_defined", "translation_status": "model_not_provisioned"},
-           {"id": "biblical_aramaic", "name": "Biblical Aramaic", "script": "Hebrew", "status": "profile_defined", "translation_status": "model_not_provisioned",
+def languages(request: Request):
+    s = _settings(request)
+    counts = retrieval.corpus_counts(s.db_path)
+    by_language = counts.get("by_language", {})
+    out = [{"id": "biblical_hebrew", "name": "Biblical Hebrew", "script": "Hebrew",
+            "status": "profile_defined",
+            "translation_status": _profile_translation_status(s, "biblical_hebrew", by_language)},
+           {"id": "biblical_aramaic", "name": "Biblical Aramaic", "script": "Hebrew",
+            "status": "profile_defined",
+            "translation_status": _profile_translation_status(s, "biblical_aramaic", by_language),
             "note": "Written in Hebrew script; must not be classified as Hebrew from script alone."}]
     out += [{"id": f, "name": f.replace("_", " ").title(), "script": None, "status": "unsupported", "translation_status": "not_available"} for f in FUTURE]
     return {"languages": out}
@@ -233,6 +262,8 @@ def ocr(request: Request, body: OcrRequest):
     return {"request_id": uuid.uuid4().hex, "status": "completed",
             "original_ocr_text": result["original_ocr_text"],
             "uncertain_spans": result["uncertain_spans"],
+            "tokens": result.get("tokens", []),
+            "offset_encoding": result.get("offset_encoding"),
             "mean_confidence": result["mean_confidence"],
             "word_count": result["word_count"],
             "ocr_engine": result["ocr_engine"], "ocr_lang": result["ocr_lang"],
@@ -257,7 +288,7 @@ def translate(request: Request, body: TranslateRequest):
         # Multiline input goes through the passage path (each segment
         # routed independently, structure preserved); a single segment
         # keeps the original translate() behaviour exactly.
-        if split_segments(text).is_multiline or len(text) > s.max_passage_chars:
+        if split_segments(text).contains_multiple_lines or len(text) > s.max_passage_chars:
             result = do_translate_passage(text, s, body.source_language)
         else:
             result = do_translate(text, s, body.source_language)
@@ -357,6 +388,7 @@ def process(request: Request, body: ProcessRequest):
     state machine (see app.services.job_runner). Poll
     GET /api/jobs/{id} and GET /api/jobs/{id}/result; cancel with
     POST /api/jobs/{id}/cancel."""
+    _require_access(request)
     s = _settings(request)
     path = _find_upload(s, body.upload_id)
     manager = _manager(request)
@@ -385,12 +417,14 @@ def _job_or_404(request: Request, job_id: str) -> dict:
 
 @router.get("/jobs/{job_id}")
 def get_job(request: Request, job_id: str):
+    _require_access(request)
     view = _job_or_404(request, job_id)
     view = {k: v for k, v in view.items() if k != "result"}
     return view
 
 @router.get("/jobs/{job_id}/result")
 def get_job_result(request: Request, job_id: str):
+    _require_access(request)
     view = _job_or_404(request, job_id)
     return {"job_id": job_id, "status": view["status"], "stage": view["stage"],
             "error": view["error"], "result": view.get("result"),
@@ -401,6 +435,7 @@ def cancel_job(request: Request, job_id: str):
     """Best-effort cooperative cancellation (AHAIET-009): the request
     is recorded and honoured between job stages; a decoder subprocess
     already running is not killed."""
+    _require_access(request)
     s = _settings(request)
     view = job_runner.request_cancel(s, _manager(request), job_id)
     if view is None:
@@ -427,6 +462,7 @@ def history(request: Request):
 
 @router.delete("/history/{record_id}")
 def delete_history(request: Request, record_id: int):
+    _require_access(request)
     s = _settings(request)
     conn = store.connect(s.db_path)
     try:

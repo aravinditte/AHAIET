@@ -188,11 +188,15 @@ def export_model(logger: Logger, profile: str, work: Path, final_ini: Path,
     copied.append(lm_dest)
     if not any(p.name.startswith("phrase-table") for p in copied):
         raise StepError(f"no phrase table found under {model_dir}; training did not produce one")
-    # Rewrite the configuration so every path points at the exported
-    # file names inside the artifact directory (the training work tree
-    # is disposable; the artifact directory is the runtime contract).
+    # Rewrite the configuration so every path is ABSOLUTE and points
+    # inside the exported artifact directory (NEW-13): the runtime
+    # adapter launches the decoder with cwd=artifact_dir, and absolute
+    # paths additionally make the exported config resolve identically
+    # from any working directory. The training work tree is
+    # disposable; the artifact directory is the runtime contract.
     ini_text = final_ini.read_text(encoding="utf-8")
-    replacements = {str(model_dir): ".", str(work): ".", str(lm_file): lm_dest.name}
+    replacements = {str(model_dir): str(artifact_dir), str(work): str(artifact_dir),
+                    str(lm_file): str(lm_dest)}
     for old, new in replacements.items():
         ini_text = ini_text.replace(old, new)
     ini_dest = artifact_dir / "moses.ini"
@@ -229,7 +233,11 @@ def export_model(logger: Logger, profile: str, work: Path, final_ini: Path,
     import json as _json
     report_path.write_text(_json.dumps(
         {"moses_ini": "moses.ini", "resolved": sorted(set(resolved)),
-         "unresolved": sorted(set(unresolved))}, indent=2), encoding="utf-8")
+         "unresolved": sorted(set(unresolved)),
+         "resolution_basis": "exported paths are absolute (NEW-13); each was resolved "
+                             "and existence-checked without reference to the process "
+                             "working directory, and the runtime adapter additionally "
+                             "launches the decoder with cwd set to the artifact directory"}, indent=2), encoding="utf-8")
     if unresolved:
         raise StepError(
             "SMT export verification failed: moses.ini references files that do not "

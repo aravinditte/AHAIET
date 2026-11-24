@@ -27,7 +27,12 @@ def validate_and_decode(data: bytes, settings: Settings) -> dict:
         raise ValidationAppError("empty_upload", "Uploaded file is empty.")
     if len(data) > settings.upload_max_bytes:
         raise ValidationAppError("upload_too_large", f"File exceeds limit of {settings.upload_max_bytes} bytes.", f"got {len(data)} bytes")
-    Image.MAX_IMAGE_PIXELS = settings.upload_max_pixels
+    # NEW-22: Image.MAX_IMAGE_PIXELS is a process-global set ONCE at
+    # application startup (app.main) from configuration — it is never
+    # mutated per request (concurrent requests with different
+    # settings must not fight over it). The per-request ceiling is
+    # enforced explicitly below from the decoded header size, before
+    # any full decode.
     try:
         with warnings.catch_warnings():
             # Pillow decompression warnings are treated as errors
@@ -198,16 +203,28 @@ def preprocess_image(data: bytes, profile: str = "conservative",
             # Median only when fine-detail content is low: if many pixels
             # differ from their local median, the page carries small marks
             # (niqqud/cantillation) and filtering would destroy them.
+            # NEW-22: the fine-detail decision is made by a cheap
+            # CLASSIFIER PASS on a downscaled copy — the full-resolution
+            # median is computed only when the classifier says fine
+            # detail is absent, never unconditionally first.
             arr2 = np.asarray(img)
-            med = _median3(arr2)
-            diff_ratio = float((np.abs(arr2.astype(int) - med.astype(int)) > 24).mean())
+            classifier = img.copy()
+            classifier.thumbnail((800, 800))
+            small_arr = np.asarray(classifier)
+            small_med = _median3(small_arr)
+            diff_ratio = float((np.abs(small_arr.astype(int) - small_med.astype(int)) > 24).mean())
             if diff_ratio < 0.02:
+                med = _median3(arr2)
                 img = Image.fromarray(med)
                 steps.append({"step": "median_noise_reduction", "applied": True,
-                              "note": f"fine-detail ratio {diff_ratio:.4f} below 0.02 threshold"})
+                              "note": f"fine-detail ratio {diff_ratio:.4f} below 0.02 threshold "
+                                      "(measured on a downscaled classifier pass; full-resolution "
+                                      "median applied only after that decision)"})
             else:
                 steps.append({"step": "median_noise_reduction", "applied": False,
-                              "note": f"skipped: fine-detail ratio {diff_ratio:.4f} >= 0.02 (small marks preserved)"})
+                              "note": f"skipped: fine-detail ratio {diff_ratio:.4f} >= 0.02 "
+                                      "(small marks preserved; measured on a downscaled "
+                                      "classifier pass, no full-resolution median computed)"})
         else:
             steps.append({"step": "deskew", "applied": False, "note": "not in conservative profile"})
             steps.append({"step": "median_noise_reduction", "applied": False,

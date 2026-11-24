@@ -42,6 +42,45 @@ class KrakenIncompatible(AppError):
                          f"Detected kraken version: {version or 'unknown'}. {detail}")
 
 
+def grapheme_clusters(text: str) -> list[str]:
+    """Split text into grapheme-like clusters (NEW-23).
+
+    This is a documented APPROXIMATION of UAX #29 grapheme cluster
+    segmentation, tuned for Hebrew/Aramaic vocalized text: a cluster
+    is a base code point plus every following combining mark
+    (unicodedata categories Mn/Me, and Mc spacing marks that attach
+    to the preceding base in these scripts), and ZWJ (U+200D)
+    sequences are kept together. It is NOT a full UAX #29
+    implementation (no extended-pictographic or regional-indicator
+    rules — neither occurs in the target scripts). When the cluster
+    count cannot be reconciled with Kraken's confidence count, the
+    caller reports confidence_unavailable rather than misaligned
+    numbers."""
+    import unicodedata
+    clusters: list[str] = []
+    current = ""
+    join_next = False
+    for ch in text:
+        if not current:
+            current = ch
+            continue
+        category = unicodedata.category(ch)
+        if unicodedata.combining(ch) or category in ("Mn", "Me", "Mc"):
+            current += ch
+        elif ch == "\u200d":
+            current += ch
+            join_next = True
+        elif join_next:
+            current += ch
+            join_next = False
+        else:
+            clusters.append(current)
+            current = ch
+    if current:
+        clusters.append(current)
+    return clusters
+
+
 def detected_version() -> str | None:
     try:
         return importlib.metadata.version("kraken")
@@ -188,12 +227,15 @@ def recognize(image_path: Path, checkpoint_path: Path) -> dict:
     for line_no, record in enumerate(records):
         text = (getattr(record, "prediction", "") or "").strip()
         confidences = [float(c) * 100.0 for c in (getattr(record, "confidences", None) or [])]
-        # Confidence alignment (AHAIET-041): Kraken confidences align
-        # to its own grapheme segmentation, which does not always match
-        # Python code-point positions (combining marks, ligatures).
-        # When the counts cannot be aligned reliably, confidences are
-        # reported as unavailable — never fabricated as zeros.
-        graphemes = list(text.replace(" ", ""))
+        # Confidence alignment (AHAIET-041; NEW-23): Kraken
+        # confidences align to its own grapheme segmentation, so the
+        # comparison uses grapheme CLUSTERS (base + combining marks,
+        # ZWJ sequences), not Python code points — code-point counts
+        # misalign on vocalized Hebrew/Aramaic (niqqud, cantillation,
+        # ligatures). When the counts cannot be aligned reliably,
+        # confidences are reported as unavailable — never fabricated
+        # as zeros and never misaligned onto the wrong characters.
+        graphemes = grapheme_clusters(text.replace(" ", ""))
         aligned = len(confidences) == len(graphemes)
         if aligned:
             all_conf.extend(confidences)
@@ -208,17 +250,28 @@ def recognize(image_path: Path, checkpoint_path: Path) -> dict:
                       "confidence_unavailable": not aligned,
                       "geometry": geometry,
                       "geometry_unavailable": geometry is None})
-        offset = 0
+        # Word confidences are sliced by grapheme-cluster position,
+        # and each word also records its code-point offsets within
+        # the line text (NEW-21 uses the service-level assembly to
+        # lift these to whole-text offsets).
+        cluster_pos = 0
+        char_pos = 0
         for word in text.split():
-            n = len(word)
-            word_conf = confidences[offset:offset + n] if aligned else []
-            offset += n
+            n_clusters = len(grapheme_clusters(word))
+            word_conf = confidences[cluster_pos:cluster_pos + n_clusters] if aligned else []
+            cluster_pos += n_clusters
             words.append({"text": word,
                           "conf": round(sum(word_conf) / len(word_conf), 2) if word_conf else None,
                           "confidence_unavailable": not aligned,
                           "line": line_no,
+                          "char_start_in_line": char_pos,
+                          "char_end_in_line": char_pos + len(word),
                           "left": 0, "top": 0, "width": 0, "height": 0,
                           "geometry_unavailable": geometry is None})
+            char_pos += len(word)
+            # account for the single separating space consumed by split()
+            while char_pos < len(text) and text[char_pos] == " ":
+                char_pos += 1
     full_text = "\n".join(line["text"] for line in lines if line["text"])
     return {"text": full_text, "words": words,
             "mean_confidence": round(sum(all_conf) / len(all_conf), 2) if all_conf else None,

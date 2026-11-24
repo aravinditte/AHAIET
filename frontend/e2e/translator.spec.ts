@@ -70,10 +70,10 @@ test.describe("smoke (honest unsupported)", () => {
     const image = fixtureImage("daniel-2-4-aramaic");
     await page.goto("/");
     await page.getByLabel(/Language profile/).selectOption("biblical_aramaic");
-    await page.locator("#file-input").setInputFiles(image);
+    await page.getByTestId("file-input").setInputFiles(image);
     await expect(page.getByTestId("upload-preview")).toBeVisible();
-    await expect(page.getByTestId("ocr-run")).toBeEnabled();
-    await page.getByTestId("ocr-run").click();
+    await expect(page.getByTestId("extract-button")).toBeEnabled();
+    await page.getByTestId("extract-button").click();
     const raw = await waitForOcrOutcome(page);
     if (!raw || raw.includes("No OCR output yet")) {
       // The honest-unsupported contract: an explicit alert naming the
@@ -90,14 +90,14 @@ test.describe("acceptance (provisioned)", () => {
   test("Hebrew flow: upload, OCR, verified translation, copy, export", async ({ page }) => {
     const image = fixtureImage("genesis-1-1-hebrew");
     await page.goto("/");
-    await page.locator("#file-input").setInputFiles(image);
+    await page.getByTestId("file-input").setInputFiles(image);
     await expect(page.getByTestId("upload-preview")).toBeVisible();
-    await expect(page.getByTestId("ocr-run")).toBeEnabled();
-    await page.getByTestId("ocr-run").click();
+    await expect(page.getByTestId("extract-button")).toBeEnabled();
+    await page.getByTestId("extract-button").click();
     const raw = await waitForOcrOutcome(page);
     requireOcrText(raw, "OCR");
     await expect(page.getByTestId("corrected-source")).not.toHaveValue("");
-    await page.getByTestId("translate-run").click();
+    await page.getByTestId("translate-button").click();
     const gen = passage("Genesis 1:1");
     await expect(page.getByTestId("translation-output")).toContainText(gen.english_text.slice(0, 40), { timeout: 30_000 });
     await page.getByTestId("copy-english").click();
@@ -113,13 +113,13 @@ test.describe("acceptance (provisioned)", () => {
     const image = fixtureImage("daniel-2-4-aramaic");
     await page.goto("/");
     await page.getByLabel(/Language profile/).selectOption("biblical_aramaic");
-    await page.locator("#file-input").setInputFiles(image);
+    await page.getByTestId("file-input").setInputFiles(image);
     await expect(page.getByTestId("upload-preview")).toBeVisible();
-    await expect(page.getByTestId("ocr-run")).toBeEnabled();
-    await page.getByTestId("ocr-run").click();
+    await expect(page.getByTestId("extract-button")).toBeEnabled();
+    await page.getByTestId("extract-button").click();
     const raw = await waitForOcrOutcome(page);
     requireOcrText(raw, "Aramaic OCR");
-    await page.getByTestId("translate-run").click();
+    await page.getByTestId("translate-button").click();
     // Acceptance means the verified Aramaic translation itself —
     // an alert is a failure here, never an accepted alternative.
     const dan = passage("Daniel 2:4");

@@ -20,8 +20,10 @@ Partitions are assigned by book blocks, never by random verse draw,
 so near-identical verses cannot leak across partitions: Genesis
 chapters 1-25 -> train, 26-50 -> validation; Ezra -> train (both
 languages; an independent book supplying Biblical Aramaic training
-material); Daniel Hebrew -> validation; Daniel Aramaic -> test
-(Daniel stays the held-out book for Aramaic). See _partition.
+material); Daniel Hebrew -> validation; Daniel Aramaic chapter 2 ->
+validation, chapters 3-7 -> test (Daniel stays held out of training);
+Ruth -> test (an independent Hebrew book, the held-out Hebrew test
+set). See _partition.
 """
 from __future__ import annotations
 import argparse, hashlib, io, json, re, sys, urllib.request, zipfile
@@ -37,15 +39,16 @@ MORPHHB_URLS = {
     "Gen": "https://raw.githubusercontent.com/openscriptures/morphhb/master/wlc/Gen.xml",
     "Dan": "https://raw.githubusercontent.com/openscriptures/morphhb/master/wlc/Dan.xml",
     "Ezra": "https://raw.githubusercontent.com/openscriptures/morphhb/master/wlc/Ezra.xml",
+    "Ruth": "https://raw.githubusercontent.com/openscriptures/morphhb/master/wlc/Ruth.xml",
 }
 WEB_ZIP_URL = "https://ebible.org/Scriptures/eng-web_vpl.zip"
 SOURCE_EDITION = "Westminster Leningrad Codex (WLC) via Open Scriptures morphhb (OSHB)"
 TRANSLATION_EDITION = "World English Bible (WEB)"
 SOURCE_LICENSE = "WLC text: Public Domain; morphhb annotations: CC BY 4.0"
 ENGLISH_LICENSE = "World English Bible: Public Domain"
-BOOK_NAMES = {"Gen": "Genesis", "Dan": "Daniel", "Ezra": "Ezra"}
-WEB_BOOK_CODES = {"Gen": "GEN", "Dan": "DAN", "Ezra": "EZR"}
-VERSE_RE = re.compile(r"^(Gen|Dan|Ezra)\.(\d+)\.(\d+)$")
+BOOK_NAMES = {"Gen": "Genesis", "Dan": "Daniel", "Ezra": "Ezra", "Ruth": "Ruth"}
+WEB_BOOK_CODES = {"Gen": "GEN", "Dan": "DAN", "Ezra": "EZR", "Ruth": "RUT"}
+VERSE_RE = re.compile(r"^(Gen|Dan|Ezra|Ruth)\.(\d+)\.(\d+)$")
 
 # Documented Biblical Aramaic ranges in Ezra (the royal correspondence
 # and decrees): Ezra 4:8-6:18 and 7:12-26. Everything else in Ezra is
@@ -67,18 +70,28 @@ def _verse_language(book: str, chapter: int, verse: int) -> str:
     return "biblical_hebrew"
 
 def _partition(book: str, chapter: int, language: str = "biblical_hebrew") -> str:
-    """Book-group partitions (AHAIET-008 remediation). Strategy:
+    """Book-group partitions (AHAIET-008 remediation; NEW-02 split
+    redesign). Strategy:
     Genesis chapters 1-25 train / 26-50 validation (unchanged);
     Ezra (both languages) train — an independent book, so its Aramaic
     sections give Biblical Aramaic real training material without
     touching the held-out book; Daniel Hebrew validation; Daniel
-    Aramaic test (Daniel remains the held-out book for Aramaic).
-    No verse appears in more than one partition, and the recorded
-    leakage checks in dataset preparation still apply."""
+    Aramaic split by chapter groups — chapter 2 validation, chapters
+    3-7 test — so Aramaic gains a disjoint validation group while
+    Daniel stays held out of training; Ruth (an independent book,
+    Hebrew only) is the held-out Hebrew TEST book, never in train or
+    validation, so the Hebrew profile gains a genuine held-out test
+    set. No verse appears in more than one partition, groups are
+    (language, book, chapter), and the recorded leakage checks in
+    dataset preparation still apply."""
     if book == "Dan":
-        return "test" if language == "biblical_aramaic" else "validation"
+        if language == "biblical_aramaic":
+            return "validation" if chapter == 2 else "test"
+        return "validation"
     if book == "Ezra":
         return "train"
+    if book == "Ruth":
+        return "test"
     return "train" if chapter <= 25 else "validation"
 
 def _strongs(lemma: str) -> str:
@@ -174,7 +187,7 @@ def build_corpus(osis_dir: Path, web_zip: Path | None, web_txt: Path | None) -> 
     seen: set[tuple] = set()
     report = {"files": {}, "verses_parsed": 0, "aligned_english": 0, "duplicates_skipped": 0,
               "validation_errors": [], "by_language": {}}
-    for book in ("Gen", "Dan", "Ezra"):
+    for book in ("Gen", "Dan", "Ezra", "Ruth"):
         path = osis_dir / f"{book}.xml"
         if not path.exists():
             report["validation_errors"].append(f"missing OSIS file: {path}")
@@ -185,7 +198,7 @@ def build_corpus(osis_dir: Path, web_zip: Path | None, web_txt: Path | None) -> 
             if not p["source_text"]:
                 report["validation_errors"].append(f"empty source: {p['reference']}")
                 continue
-            ref_m = re.match(r"^(Genesis|Daniel|Ezra) (\d+):(\d+)$", p["reference"])
+            ref_m = re.match(r"^(Genesis|Daniel|Ezra|Ruth) (\d+):(\d+)$", p["reference"])
             chapter, verse = int(ref_m.group(2)), int(ref_m.group(3))
             english = web.get((book, chapter, verse), "")
             p["english_text"] = english

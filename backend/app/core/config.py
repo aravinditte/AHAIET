@@ -16,6 +16,25 @@ def _bool_env(name: str, default: bool) -> bool:
         return default
     return v.strip().lower() not in ("0", "false", "no", "off")
 
+def _cmd_env(name: str, default: str):
+    """A decoder command from the environment: a plain string, or a
+    JSON array for the command-vector form (NEW-05), e.g.
+    AHAIET_MOSES_CMD='["/usr/bin/python3", "/opt/fake_moses.py"]'."""
+    import json as _json
+    v = os.getenv(name)
+    if v in (None, ""):
+        return default
+    v = v.strip()
+    if v.startswith("["):
+        try:
+            parsed = _json.loads(v)
+            if isinstance(parsed, list) and parsed:
+                return [str(x) for x in parsed]
+        except Exception:
+            pass
+    return v
+
+
 def _origins_env(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
     v = os.getenv(name)
     if v in (None, ""):
@@ -41,8 +60,12 @@ class Settings:
     ocr_timeout_s: float = 120.0
     # Trained translation model inference (Moses SMT / Marian NMT). The
     # binaries are locally installed tools; runtime never needs WSL2.
-    moses_cmd: str = "moses"
-    marian_decoder_cmd: str = "marian-decoder"
+    # Decoder commands (NEW-05): a plain string (binary name or path,
+    # optionally with arguments) OR a command vector as a list, e.g.
+    # [sys.executable, "/path/to/decoder.py"] — adapters resolve both
+    # through services/translation/command.py without any shell.
+    moses_cmd: str | list[str] = "moses"
+    marian_decoder_cmd: str | list[str] = "marian-decoder"
     translation_timeout_s: float = 120.0
     # Complete-passage handling: a multiline text is translated segment
     # by segment; these limits bound that work per request.
@@ -94,9 +117,10 @@ class Settings:
     # - Decoded + intermediate byte budget for preprocessing
     #   (AHAIET-023), checked before heavy steps.
     preprocessing_max_bytes: int = 512 * 1024 * 1024
-    # - Historical-script production gate (AHAIET-025): minimum
-    #   independent HTR test lines before a tier above
-    #   experimentally_evaluated may be reported.
+    # - Historical-script evaluation gate (AHAIET-025): minimum
+    #   independent HTR test lines recorded by the earlier tier
+    #   scheme; the production gate itself is NEW-17's
+    #   script_production_min_samples / script_production_max_cer.
     script_min_test_samples: int = 20
     # - Rate limiter registry hygiene (AHAIET-043): hard cap on
     #   tracked clients, and X-Forwarded-For is trusted only when a
@@ -112,6 +136,21 @@ class Settings:
     access_token: str | None = None
     # - Tesseract readiness probe cache TTL (AHAIET-034).
     tesseract_probe_ttl_s: float = 30.0
+    # - Artifact integrity (NEW-27): the resolution cache may serve a
+    #   fast path only within this TTL; content is always rehashed on
+    #   startup, on manifest/entry change, and on an explicit
+    #   verify_artifacts(settings, force=True) call.
+    artifact_integrity_ttl_s: float = 300.0
+    # - Job ownership/heartbeat (NEW-15): a non-terminal job is only
+    #   recovered as orphaned when its heartbeat is older than this
+    #   threshold (or its owner recorded a stop).
+    job_heartbeat_stale_s: float = 120.0
+    # - Script production gate (NEW-17): validated_for_production
+    #   requires at least this many independently labelled samples and
+    #   a measured CER at or below this ceiling (plus a recorded WER,
+    #   an exact script-identity match, and a verified dataset hash).
+    script_production_min_samples: int = 50
+    script_production_max_cer: float = 0.20
 
     def __post_init__(self) -> None:
         """Central settings validation (AHAIET-055): invalid values
@@ -137,6 +176,10 @@ class Settings:
         need(self.max_concurrent_translation > 0, "AHAIET_MAX_CONCURRENT_TRANSLATION must be > 0")
         need(self.preprocessing_max_bytes > 0, "AHAIET_PREPROCESSING_MAX_BYTES must be > 0")
         need(self.script_min_test_samples > 0, "AHAIET_SCRIPT_MIN_TEST_SAMPLES must be > 0")
+        need(self.artifact_integrity_ttl_s > 0, "AHAIET_ARTIFACT_INTEGRITY_TTL_S must be > 0")
+        need(self.job_heartbeat_stale_s > 0, "AHAIET_JOB_HEARTBEAT_STALE_S must be > 0")
+        need(self.script_production_min_samples > 0, "AHAIET_SCRIPT_PROD_MIN_SAMPLES must be > 0")
+        need(0.0 < self.script_production_max_cer <= 1.0, "AHAIET_SCRIPT_PROD_MAX_CER must be in (0, 1]")
         if problems:
             raise ValueError("Invalid AHAIET configuration: " + "; ".join(problems))
 
@@ -158,8 +201,8 @@ class Settings:
             ocr_confidence_threshold=float(os.getenv("AHAIET_OCR_CONF_THRESHOLD", "60")),
             ocr_psm=_int_env("AHAIET_OCR_PSM", 6),
             ocr_timeout_s=float(os.getenv("AHAIET_OCR_TIMEOUT_S", "120")),
-            moses_cmd=os.getenv("AHAIET_MOSES_CMD", "moses"),
-            marian_decoder_cmd=os.getenv("AHAIET_MARIAN_DECODER_CMD", "marian-decoder"),
+            moses_cmd=_cmd_env("AHAIET_MOSES_CMD", "moses"),
+            marian_decoder_cmd=_cmd_env("AHAIET_MARIAN_DECODER_CMD", "marian-decoder"),
             translation_timeout_s=float(os.getenv("AHAIET_TRANSLATION_TIMEOUT_S", "120")),
             max_segments=_int_env("AHAIET_MAX_SEGMENTS", 64),
             max_passage_chars=_int_env("AHAIET_MAX_PASSAGE_CHARS", 20000),
@@ -187,6 +230,10 @@ class Settings:
             trust_forwarded_for=_bool_env("AHAIET_TRUST_FORWARDED_FOR", False),
             access_token=os.getenv("AHAIET_ACCESS_TOKEN") or None,
             tesseract_probe_ttl_s=float(os.getenv("AHAIET_TESSERACT_PROBE_TTL_S", "30")),
+            artifact_integrity_ttl_s=float(os.getenv("AHAIET_ARTIFACT_INTEGRITY_TTL_S", "300")),
+            job_heartbeat_stale_s=float(os.getenv("AHAIET_JOB_HEARTBEAT_STALE_S", "120")),
+            script_production_min_samples=_int_env("AHAIET_SCRIPT_PROD_MIN_SAMPLES", 50),
+            script_production_max_cer=float(os.getenv("AHAIET_SCRIPT_PROD_MAX_CER", "0.20")),
         )
 
     @property

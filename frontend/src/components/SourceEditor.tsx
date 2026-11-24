@@ -3,12 +3,34 @@ import React from "react";
 import type { UncertainSpan } from "@/types/api";
 
 function HighlightedRaw({ rawOcr, uncertain }: { rawOcr: string; uncertain: UncertainSpan[] }) {
-  // AHAIET-028: highlight by token OCCURRENCE id, not by string
-  // search. Each non-whitespace token is numbered in reading order;
-  // a span marks exactly the occurrence its occurrence_id names, so a
-  // repeated word is highlighted only where OCR was actually unsure.
-  // Spans without an occurrence_id (older payloads) fall back to
-  // consuming matching texts in order.
+  // NEW-21: when every span carries authoritative character offsets
+  // (Unicode code points, from the backend's token assembly), the
+  // highlight slices those offsets directly — no re-tokenization in
+  // the browser. For the Hebrew/Aramaic scripts this app targets
+  // (all in the BMP), code points coincide with JS string indices.
+  const offsetReady = uncertain.length > 0
+    && uncertain.every((u) => typeof u.char_start === "number" && typeof u.char_end === "number");
+  if (offsetReady) {
+    const ordered = [...uncertain].sort((a, b) => (a.char_start ?? 0) - (b.char_start ?? 0));
+    const parts: React.ReactNode[] = [];
+    let cursor = 0;
+    ordered.forEach((u, i) => {
+      const start = u.char_start ?? 0;
+      const end = u.char_end ?? start;
+      if (start < cursor || end < start) return;
+      if (start > cursor) parts.push(<span key={`t${i}`}>{rawOcr.slice(cursor, start)}</span>);
+      parts.push(<mark key={`m${i}`} className="bg-yellow-300 text-black dark:bg-yellow-600" title="Low OCR confidence word">{rawOcr.slice(start, end)}</mark>);
+      cursor = end;
+    });
+    if (cursor < rawOcr.length) parts.push(<span key="tail">{rawOcr.slice(cursor)}</span>);
+    return <>{parts}</>;
+  }
+  // Fallback (AHAIET-028): highlight by token OCCURRENCE id. Each
+  // non-whitespace token is numbered in reading order; a span marks
+  // exactly the occurrence its occurrence_id names, so a repeated
+  // word is highlighted only where OCR was actually unsure. Spans
+  // without an occurrence_id consume matching texts in order. This
+  // path is labelled approximate in the UI (NEW-21).
   const byOccurrence = new Map<string, UncertainSpan>();
   const fallbackQueue: string[] = [];
   for (const u of uncertain) {
@@ -30,7 +52,16 @@ function HighlightedRaw({ rawOcr, uncertain }: { rawOcr: string; uncertain: Unce
       ? <mark key={i} data-occurrence-id={id} className="bg-yellow-300 text-black dark:bg-yellow-600" title="Low OCR confidence word">{tok}</mark>
       : <span key={i}>{tok}</span>);
   });
-  return <>{parts}</>;
+  return (
+    <>
+      {parts}
+      {uncertain.length > 0 && (
+        <p className="mt-1 text-xs" data-testid="highlight-approximate">
+          Highlighting is approximate for this result: the OCR engine did not provide exact character offsets.
+        </p>
+      )}
+    </>
+  );
 }
 
 export function SourceEditor({ rawOcr, corrected, onCorrected, uncertainSpans = [], meanConfidence = null, ocrNote = null }: {

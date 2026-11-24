@@ -64,6 +64,9 @@ class ArtifactResolution:
     file_checks: list = field(default_factory=list)
     evaluation_run: dict | None = None
     stale_metric: bool = False
+    # NEW-14: a numeric score exists somewhere but no valid run record
+    # accompanies it, so it was ignored.
+    metric_without_run: bool = False
 
     @property
     def engine(self) -> str | None:
@@ -86,6 +89,7 @@ class ArtifactResolution:
             "file_checks": self.file_checks,
             "evaluation_run": self.evaluation_run,
             "stale_metric": self.stale_metric,
+            "metric_without_run": self.metric_without_run,
         }
 
 
@@ -122,16 +126,53 @@ def _card_files_by_role(card: dict | None) -> dict[str, list[str]]:
     return out
 
 
-def _recorded_chrf(entry: dict, card: dict | None) -> float | None:
-    """Recorded chrF++ only. A pure-Python fallback chrF value is stored
-    under the key "chrf" (never "chrf_pp") by the evaluation harness and
-    is deliberately NOT read here (AHAIET-006)."""
-    for source in ((card or {}).get("metrics") or {}, entry.get("evaluation") or {},
-                   (entry.get("selection") or {})):
-        value = source.get("chrf_pp")
-        if isinstance(value, (int, float)):
-            return float(value)
-    return None
+def _valid_run_record(run, artifact_sha: str | None) -> dict | None:
+    """A run record is valid evidence (NEW-14) only when it carries
+    ALL of: test-set sha256, sample count, metric implementation
+    signature, artifact sha256, and a date — and, when the artifact's
+    current hash is known, its artifact sha256 matches it. A bare
+    number without this record is not a score."""
+    if not isinstance(run, dict):
+        return None
+    sample_count = run.get("sample_count", run.get("test_pairs"))
+    if not (run.get("test_set_sha256") and run.get("metric_signature")
+            and isinstance(sample_count, int) and sample_count > 0
+            and run.get("artifact_sha256") and run.get("date")):
+        return None
+    if artifact_sha and run["artifact_sha256"] != artifact_sha:
+        return None
+    return run
+
+
+def _recorded_chrf(entry: dict, card: dict | None,
+                   artifact_sha: str | None = None) -> tuple[float | None, bool]:
+    """(recorded chrF++, saw_unaccompanied_score).
+
+    NEW-14: a chrF++ value counts ONLY when accompanied by a valid
+    evaluation-run record (see _valid_run_record). An isolated numeric
+    chrf_pp — in a card, a manifest evaluation block, or a selection
+    block — is ignored for readiness/selection and reported via the
+    second return value so the state is visible, never silently
+    trusted. A pure-Python fallback chrF value is stored under the key
+    "chrf" (never "chrf_pp") and is deliberately NOT read here
+    (AHAIET-006)."""
+    candidates: list[tuple[object, object]] = [
+        (((card or {}).get("metrics") or {}).get("chrf_pp"),
+         (card or {}).get("evaluation_run")),
+        (((entry.get("evaluation") or {}).get("chrf_pp")),
+         (entry.get("evaluation") or {}).get("run")),
+        (((entry.get("selection") or {}).get("value")
+          if (entry.get("selection") or {}).get("metric") == "chrf_pp" else None),
+         (entry.get("selection") or {}).get("run")),
+    ]
+    saw_bare = False
+    for value, run in candidates:
+        if not isinstance(value, (int, float)):
+            continue
+        if _valid_run_record(run, artifact_sha) is not None:
+            return float(value), saw_bare
+        saw_bare = True
+    return None, saw_bare
 
 
 def evaluation_run_of(entry: dict, card: dict | None) -> dict | None:
@@ -142,6 +183,7 @@ def evaluation_run_of(entry: dict, card: dict | None) -> dict | None:
     manifest entry's evaluation record."""
     for source in ((card or {}).get("evaluation_run"),
                    (entry.get("evaluation") or {}).get("run"),
+                   (entry.get("selection") or {}).get("run"),
                    entry.get("evaluation_run")):
         if isinstance(source, dict) and source.get("test_set_sha256") \
                 and source.get("metric_signature"):
@@ -149,10 +191,23 @@ def evaluation_run_of(entry: dict, card: dict | None) -> dict | None:
     return None
 
 
-# Resolution cache (AHAIET-019): keyed by the artifact directory plus a
-# signature of the model card and every card-listed file (mtime + size)
-# and the manifest entry itself, so editing any of them re-resolves.
-_resolution_cache: dict[str, tuple[str, "ArtifactResolution"]] = {}
+# Resolution cache (AHAIET-019; NEW-27): keyed by the artifact
+# directory plus a signature of the model card and every card-listed
+# file (mtime + size) and the manifest entry itself. NEW-27: the
+# signature alone cannot detect an in-place same-size edit with
+# restored timestamps, so a cached verdict is served only within the
+# integrity TTL (Settings.artifact_integrity_ttl_s, mirrored here from
+# the environment for this settings-free module); past the TTL, on an
+# entry/signature change, on startup, and on an explicit
+# verify_artifacts() call, file contents are rehashed.
+import os as _os
+import time as _time
+_INTEGRITY_TTL_S = float(_os.getenv("AHAIET_ARTIFACT_INTEGRITY_TTL_S", "300"))
+_resolution_cache: dict[str, tuple[str, "ArtifactResolution", float]] = {}
+
+
+def invalidate_resolution_cache() -> None:
+    _resolution_cache.clear()
 
 
 def _resolution_signature(entry: dict, artifact_dir: Path) -> str:
@@ -188,11 +243,14 @@ def resolve_entry(entry: dict) -> ArtifactResolution:
         return ArtifactResolution(entry=entry, ok=False, artifact_dir=artifact_dir,
                                   missing=[f"artifact directory does not exist: {artifact_dir}"],
                                   evaluation_state="provisioned_missing_files")
-    # Resolution cache: identical signature -> identical verdict.
+    # Resolution cache fast path (NEW-27): identical signature AND
+    # within the integrity TTL. Anything else re-resolves (rehashing
+    # every card-listed file that records a checksum).
     cache_key = str(artifact_dir)
     signature = _resolution_signature(entry, artifact_dir)
     cached_resolution = _resolution_cache.get(cache_key)
-    if cached_resolution and cached_resolution[0] == signature:
+    if cached_resolution and cached_resolution[0] == signature \
+            and (_time.monotonic() - cached_resolution[2]) < _INTEGRITY_TTL_S:
         return cached_resolution[1]
     card = _load_card(artifact_dir)
     missing: list[str] = []
@@ -252,13 +310,16 @@ def resolve_entry(entry: dict) -> ArtifactResolution:
                     break
         if not found:
             missing.append(piece)
-    chrf = _recorded_chrf(entry, card)
     sha = (card or {}).get("artifact_sha256") or entry.get("checksum")
     if not sha:
         # Fall back to hashing the engine's primary configuration/checkpoint.
         primary = artifact_dir / ("moses.ini" if entry.get("engine") == "moses" else "model.npz")
         if primary.exists():
             sha = _sha256_file(primary)
+    # NEW-14: the recorded score is read only together with its
+    # evaluation-run record, validated against the artifact's current
+    # hash — a bare chrf_pp number is not evidence.
+    chrf, metric_without_run = _recorded_chrf(entry, card, artifact_sha=sha)
     # Verify the recorded primary-artifact checksum itself when the
     # card names its primary file (AHAIET-019).
     primary_name = (card or {}).get("primary_artifact")
@@ -277,13 +338,47 @@ def resolve_entry(entry: dict) -> ArtifactResolution:
         chrf = None
     state = "evaluated" if chrf is not None else "trained_but_not_evaluated"
     version = (card or {}).get("model_version") or entry.get("version")
+    if metric_without_run:
+        # The score was ignored; the run record (if any partial one
+        # exists) is not presented as valid evidence either.
+        run_record = None
     resolution = ArtifactResolution(entry=entry, ok=not missing, artifact_dir=artifact_dir,
                               missing=missing, card=card, evaluation_state=state,
                               artifact_sha256=sha, model_version=version, chrf_pp=chrf,
                               file_checks=file_checks, evaluation_run=run_record,
-                              stale_metric=stale)
-    _resolution_cache[cache_key] = (signature, resolution)
+                              stale_metric=stale, metric_without_run=metric_without_run)
+    _resolution_cache[cache_key] = (signature, resolution, _time.monotonic())
     return resolution
+
+
+def verify_artifacts(settings, force: bool = True) -> list[dict]:
+    """Explicit integrity verification (NEW-27).
+
+    With force=True (the default) the resolution cache is dropped and
+    every translation entry in the models manifest is re-resolved from
+    disk, rehashing the CONTENT of every card-listed file that records
+    a checksum — so an in-place same-size edit with restored mtime and
+    size is caught here even though the cache signature cannot see it.
+    Called at application startup and available to operators/tests.
+
+    Recommended artifact layout (see docs/TRAINING.md): immutable
+    artifact directories named by content hash
+    (artifacts/models/<engine>/<profile>/<artifact_sha256-prefix>/)
+    with activation done by pointing the manifest entry at the new
+    directory — never by editing files in place."""
+    if force:
+        invalidate_resolution_cache()
+    try:
+        manifest = json.loads(Path(settings.models_manifest).read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    out = []
+    for entry in manifest.get("models", []):
+        if entry.get("kind") != "translation":
+            continue
+        resolution = resolve_entry(entry)
+        out.append(resolution.summary())
+    return out
 
 
 def card_file(resolution: ArtifactResolution, roles: tuple[str, ...],

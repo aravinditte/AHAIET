@@ -69,6 +69,9 @@ def select_engines(settings: Settings, profile: str) -> list[ArtifactResolution]
             complete.append(resolution)
     if not complete:
         return []
+    # NEW-14: resolution.chrf_pp is non-None only when a valid
+    # evaluation-run record accompanies the score, so `comparable`
+    # below is exactly the set of run-evidenced engines.
     comparable = [r for r in complete if r.chrf_pp is not None and r.evaluation_run]
     if comparable:
         # The comparison set is the largest group sharing one
@@ -86,14 +89,9 @@ def select_engines(settings: Settings, profile: str) -> list[ArtifactResolution]
         rest = [r for r in complete if r not in ranked]
         rest.sort(key=_default_rank)
         return ranked + rest
-    evaluated = [r for r in complete if r.chrf_pp is not None]
-    if len(evaluated) == 1:
-        rest = [r for r in complete if r is not evaluated[0]]
-        rest.sort(key=_default_rank)
-        return [evaluated[0]] + rest
-    # Multiple recorded scores without run records are not comparable;
-    # fall back to the documented default order rather than comparing
-    # numbers that may come from different test sets or metrics.
+    # Scores without a valid run record never reach this list (they
+    # are gated in model_artifacts, NEW-14); anything left is
+    # unevaluated and follows the documented default order.
     complete.sort(key=_default_rank)
     return complete
 
@@ -105,6 +103,42 @@ def select_engine(settings: Settings, profile: str) -> ArtifactResolution | None
     return engines[0] if engines else None
 
 
+def selection_basis(settings: Settings, profile: str) -> dict:
+    """How the head of select_engines earned its place (NEW-04).
+
+    - "head_to_head": at least two engines carry valid run records
+      sharing one (test-set sha256, metric signature) — their scores
+      were genuinely compared.
+    - "single_evaluated_engine": exactly one engine carries a valid
+      run record; it is selected, but comparable=False — no
+      head-to-head comparison happened and none is claimed.
+    - "default_order": no run-evidenced engine; the documented
+      default order decides.
+    """
+    complete = []
+    for entry in translation_entries(settings, profile):
+        resolution = model_artifacts.resolve_entry(entry)
+        if resolution.ok:
+            complete.append(resolution)
+    evidenced = [r for r in complete if r.chrf_pp is not None and r.evaluation_run]
+    if len(evidenced) >= 2:
+        groups: dict[tuple, int] = {}
+        for r in evidenced:
+            key = (r.evaluation_run.get("test_set_sha256"),
+                   r.evaluation_run.get("metric_signature"))
+            groups[key] = groups.get(key, 0) + 1
+        if max(groups.values()) >= 2:
+            return {"basis": "head_to_head", "comparable": True,
+                    "evaluated_engines": [r.engine for r in evidenced]}
+    if len(evidenced) == 1:
+        return {"basis": "single_evaluated_engine", "comparable": False,
+                "evaluated_engines": [evidenced[0].engine]}
+    if len(evidenced) >= 2:
+        return {"basis": "single_evaluated_engine", "comparable": False,
+                "evaluated_engines": [r.engine for r in evidenced]}
+    return {"basis": "default_order", "comparable": False, "evaluated_engines": []}
+
+
 def per_profile_readiness(settings: Settings, corpus_by_language: dict | None = None) -> dict:
     """Readiness summary per profile for /api/capabilities and /api/models."""
     out: dict[str, dict] = {}
@@ -112,12 +146,15 @@ def per_profile_readiness(settings: Settings, corpus_by_language: dict | None = 
     for profile in PROFILES:
         selected = select_engine(settings, profile)
         states = engine_states(settings, profile)
+        basis = selection_basis(settings, profile)
         out[profile] = {
             "status": "available" if (selected or corpus_by_language.get(profile)) else "unavailable",
             "verified_reference": bool(corpus_by_language.get(profile)),
             "engine": selected.engine if selected else None,
             "evaluation_state": selected.evaluation_state if selected else None,
             "model_version": selected.model_version if selected else None,
+            "selection_basis": basis["basis"],
+            "comparable": basis["comparable"],
             "engines": states,
         }
     return out

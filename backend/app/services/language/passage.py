@@ -30,8 +30,22 @@ class Segmentation:
     line_slots: list[bool] = field(default_factory=list)  # True = blank line
 
     @property
-    def is_multiline(self) -> bool:
+    def has_multiple_nonblank_segments(self) -> bool:
         return len(self.segments) > 1
+
+    @property
+    def contains_multiple_lines(self) -> bool:
+        """True when the ORIGINAL text has line boundaries at all
+        (NEW-09) — including exactly one nonblank segment padded by
+        blank lines. Routing decisions use this, not the segment
+        count: any line-structured input goes through the
+        layout-preserving passage flow."""
+        return self.total_lines > 1
+
+    @property
+    def is_multiline(self) -> bool:
+        # Backwards-compatible alias: multiple nonblank segments.
+        return self.has_multiple_nonblank_segments
 
 
 def split_segments(text: str) -> Segmentation:

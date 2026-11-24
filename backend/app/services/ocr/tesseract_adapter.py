@@ -81,12 +81,33 @@ def readiness(cmd: str = "tesseract", lang: str = "heb",
             return dict(cached[1])
     binary = is_available(cmd)
     langs = list_languages(cmd, tessdata_prefix) if binary else None
-    language_ok = (lang in langs) if langs is not None else (
-        traineddata_available(lang, tessdata_prefix) if tessdata_prefix is not None else False)
+    # NEW-20: a failed --list-langs probe is NOT evidence of language
+    # support. File presence is reported separately and never makes
+    # the engine "usable" on its own: if the probe failed, the
+    # binary may be unable to load the traineddata it supposedly has.
+    probe_failed = bool(binary and langs is None)
+    file_present = bool(tessdata_prefix is not None
+                        and (tessdata_prefix / f"{lang}.traineddata").exists())
+    if langs is not None:
+        language_ok = lang in langs
+    else:
+        language_ok = False
+    reason = None
+    if not binary:
+        reason = "tesseract binary not found"
+    elif probe_failed:
+        reason = ("the tesseract --list-langs probe failed, so language support "
+                  "could not be verified; file presence alone is not treated as "
+                  "evidence the binary can load the traineddata")
+    elif not language_ok:
+        reason = f"the binary does not report the '{lang}' language data as available"
     out = {"binary_available": binary,
            "language_data_available": bool(language_ok),
+           "language_data_file_present": file_present,
+           "probe_failed": probe_failed,
+           "reason": reason,
            "languages": langs,
-           "usable": bool(binary and language_ok)}
+           "usable": bool(binary and language_ok and not probe_failed)}
     with _probe_lock:
         _probe_cache[key] = (now, out)
     return dict(out)
@@ -145,9 +166,25 @@ def parse_tsv(tsv_text: str) -> dict:
     if current:
         lines.append(" ".join(current))
     text = "\n".join(lines)
+    # NEW-21: authoritative character offsets. The text above is
+    # assembled deterministically from these words (words joined by
+    # single spaces within a line, lines by single newlines), so each
+    # word's code-point span in the assembled text is exact — the UI
+    # highlights by slicing these offsets and never re-tokenizes.
+    pos = 0
+    prev_key: tuple | None = None
+    for w in words:
+        key = (w["block"], w["par"], w["line"])
+        if prev_key is not None:
+            pos += 1  # the space within a line, or the newline between lines
+        prev_key = key
+        w["char_start"] = pos
+        pos += len(w["text"])
+        w["char_end"] = pos
     confs = [w["conf"] for w in words if w["conf"] >= 0]
     mean_conf = round(sum(confs) / len(confs), 2) if confs else None
-    return {"text": text, "words": words, "mean_confidence": mean_conf}
+    return {"text": text, "words": words, "mean_confidence": mean_conf,
+            "offset_encoding": "unicode_code_points"}
 
 
 def run_tesseract_tsv(image_path: Path, cmd: str = "tesseract", lang: str = "heb",

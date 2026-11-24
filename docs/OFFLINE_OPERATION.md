@@ -1,0 +1,2 @@
+# Offline operation
+After dependency installation (pip/npm) and any explicit model provisioning, the app makes no network calls: no paid APIs, no API keys, no hosted inference, no telemetry, no runtime model downloads. Frontend talks only to the local backend (NEXT_PUBLIC_API_BASE, default http://127.0.0.1:8000). OCR (Tesseract/Kraken) and translation (Moses/Marian) are local processes/libraries. scripts/provision-models.ps1 performs checks only and downloads nothing.

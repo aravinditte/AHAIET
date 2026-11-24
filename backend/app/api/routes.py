@@ -9,7 +9,11 @@ from app.schemas.models import (TranslateRequest, OcrRequest, ProcessRequest,
                                 MorphologyRequest, RetrievalRequest, TranslationResponse)
 from app.services.preprocessing.service import validate_and_decode
 from app.services.ocr.service import ocr_status, run_ocr
-from app.services.translation.service import translate as do_translate, load_models_manifest
+from app.services.ocr import script_profiles
+from app.services.language.passage import split_segments
+from app.services.translation.service import (translate as do_translate,
+                                              translate_passage as do_translate_passage,
+                                              load_models_manifest)
 from app.services.translation import model_artifacts, selection as model_selection
 from app.services.language.service import suggest_language, SUPPORTED, FUTURE
 from app.services import retrieval, morphology
@@ -84,6 +88,9 @@ def models(request: Request):
             # Live artifact state, derived from the disk and the model
             # card — the manifest alone never proves readiness.
             item.update(model_artifacts.resolve_entry(entry).summary())
+        if entry.get("kind") == "ocr" and entry.get("engine") == "kraken":
+            item["checkpoints_on_disk"] = script_profiles.kraken_checkpoints(
+                s, entry.get("script_profile"))
         enriched.append(item)
     return {**manifest, "models": enriched}
 
@@ -107,12 +114,24 @@ def get_upload(request: Request, upload_id: str):
     fmt = {".png": "PNG", ".jpg": "JPEG", ".tiff": "TIFF", ".webp": "WEBP", ".bmp": "BMP"}.get(ext, "PNG")
     return FileResponse(path, media_type=MEDIA[fmt])
 
+@router.get("/scripts")
+def scripts(request: Request):
+    """Computed script support matrix: a historical script profile is
+    'supported' only when a measured evaluation record references a
+    Kraken checkpoint that exists on disk (see services/ocr/script_profiles.py)."""
+    s = _settings(request)
+    ocr = ocr_status(s)
+    return {"scripts": ocr["scripts"],
+            "note": "Support is computed from live evidence (provisioned engines, checkpoint "
+                    "files, measured evaluation records) — never declared by hand."}
+
 @router.post("/ocr")
 def ocr(request: Request, body: OcrRequest):
     s = _settings(request)
     path = _find_upload(s, body.upload_id)
     start = time.time()
-    result = run_ocr(path, s, body.language_profile, body.preprocessing_profile, body.psm)
+    result = run_ocr(path, s, body.language_profile, body.preprocessing_profile, body.psm,
+                     engine=body.engine, script_profile=body.script_profile)
     return {"request_id": uuid.uuid4().hex, "status": "completed",
             "original_ocr_text": result["original_ocr_text"],
             "uncertain_spans": result["uncertain_spans"],
@@ -120,8 +139,12 @@ def ocr(request: Request, body: OcrRequest):
             "word_count": result["word_count"],
             "ocr_engine": result["ocr_engine"], "ocr_lang": result["ocr_lang"],
             "ocr_profile": result["ocr_profile"], "ocr_profile_note": result["ocr_profile_note"],
+            "script_profile": result.get("script_profile", body.script_profile),
+            "engine_version": result.get("engine_version"),
+            "lines": result.get("lines"),
             "psm": result["psm"], "preprocessing": result["preprocessing"],
             "language": suggest_language(result["original_ocr_text"], body.language_profile),
+            "stage_timings_ms": result.get("stage_timings_ms", {}),
             "processing_time_ms": int((time.time() - start) * 1000)}
 
 @router.post("/translate")
@@ -133,7 +156,13 @@ def translate(request: Request, body: TranslateRequest):
     start = time.time()
     warnings: list[str] = []
     try:
-        result = do_translate(text, s, body.source_language)
+        # Multiline input goes through the passage path (each segment
+        # routed independently, structure preserved); a single segment
+        # keeps the original translate() behaviour exactly.
+        if split_segments(text).is_multiline or len(text) > s.max_passage_chars:
+            result = do_translate_passage(text, s, body.source_language)
+        else:
+            result = do_translate(text, s, body.source_language)
     except UnavailableError as e:
         variant = getattr(e, "variant_candidate", None)
         if variant is not None:
@@ -152,7 +181,8 @@ def translate(request: Request, body: TranslateRequest):
     if result.get("evaluation_state"):
         model_versions["evaluation_state"] = result["evaluation_state"]
     resp = TranslationResponse(
-        request_id=uuid.uuid4().hex, status="completed",
+        request_id=uuid.uuid4().hex,
+        status=result.get("passage_status", "completed"),
         detected_language=result.get("matched_language") or sug["suggestion"],
         selected_language=body.source_language, script="Hebrew",
         original_ocr_text=body.text, corrected_source_text=text,
@@ -161,7 +191,13 @@ def translate(request: Request, body: TranslateRequest):
         artifact_sha256=result.get("artifact_sha256"), coverage=result.get("coverage"),
         source_references=result.get("source_references", []),
         warnings=warnings, model_versions=model_versions,
-        processing_time_ms=int((time.time() - start) * 1000))
+        processing_time_ms=int((time.time() - start) * 1000),
+        verification=result.get("verification"),
+        provenance=result.get("provenance"),
+        segments=result.get("segments", []),
+        unevaluated_model=bool(result.get("unevaluated_model")),
+        cached=bool(result.get("cached")),
+        stage_timings_ms=result.get("stage_timings_ms", {}))
     return resp.model_dump()
 
 @router.post("/retrieval")
@@ -192,19 +228,47 @@ def process(request: Request, body: ProcessRequest):
         conn.execute("INSERT INTO jobs(id,upload_id,language_profile,status,stage) VALUES (?,?,?,?,?)",
                      (job_id, body.upload_id, body.language_profile, "running", "ocr"))
         conn.commit()
+        timings: dict = {}
+        translation_payload = None
+        translation_error = None
         try:
-            result = run_ocr(path, s, body.language_profile, body.preprocessing_profile, body.psm)
+            result = run_ocr(path, s, body.language_profile, body.preprocessing_profile, body.psm,
+                             engine=body.engine, script_profile=body.script_profile)
             status, stage, error = "awaiting_translation", "ocr_complete", None
+            timings.update(result.get("stage_timings_ms", {}))
+            # Continue through the same translation path as /api/translate:
+            # the raw OCR text is the source (corrections happen in the UI
+            # flow); the OCR mean confidence feeds the verification
+            # report's empirical-uncertainty section.
+            try:
+                translation_payload = do_translate_passage(
+                    result["original_ocr_text"], s, body.language_profile,
+                    context={"ocr_mean_confidence": result.get("mean_confidence")})
+                for k, v in translation_payload.get("stage_timings_ms", {}).items():
+                    timings[k] = timings.get(k, 0) + v
+                pstatus = translation_payload.get("passage_status", "completed")
+                if pstatus in ("completed", "partial"):
+                    status, stage = pstatus, "done"
+                else:
+                    translation_error = "Translation failed for every segment of the passage."
+                    error = translation_error
+            except AppError as e:
+                translation_error = f"{e.code}: {e.message} {e.detail or ''}".strip()
+                error = translation_error
+            result = {"ocr": result, "translation": translation_payload,
+                      "translation_error": translation_error}
         except AppError as e:
             status, stage, error, result = "failed", "ocr", f"{e.code}: {e.message} {e.detail or ''}".strip(), None
-        conn.execute("UPDATE jobs SET status=?,stage=?,error=?,result_json=?,updated_at=datetime('now') WHERE id=?",
-                     (status, stage, error, json.dumps(result, ensure_ascii=False) if result else None, job_id))
+        conn.execute("UPDATE jobs SET status=?,stage=?,error=?,result_json=?,stage_timings_json=?,updated_at=datetime('now') WHERE id=?",
+                     (status, stage, error, json.dumps(result, ensure_ascii=False) if result else None,
+                      json.dumps(timings), job_id))
         conn.execute("INSERT INTO history(upload_id,language_profile,status,detail) VALUES (?,?,?,?)",
                      (body.upload_id, body.language_profile, status, error))
         conn.commit()
     finally:
         conn.close()
-    return {"job_id": job_id, "status": status, "stage": stage, "error": error}
+    return {"job_id": job_id, "status": status, "stage": stage, "error": error,
+            "stage_timings_ms": timings}
 
 def _job_or_404(s: Settings, job_id: str) -> dict:
     conn = store.connect(s.db_path)
@@ -226,7 +290,9 @@ def get_job(request: Request, job_id: str):
 def get_job_result(request: Request, job_id: str):
     row = _job_or_404(_settings(request), job_id)
     result = json.loads(row["result_json"]) if row.get("result_json") else None
-    return {"job_id": job_id, "status": row["status"], "stage": row["stage"], "error": row["error"], "result": result}
+    timings = json.loads(row["stage_timings_json"]) if row.get("stage_timings_json") else {}
+    return {"job_id": job_id, "status": row["status"], "stage": row["stage"], "error": row["error"],
+            "result": result, "stage_timings_ms": timings}
 
 @router.get("/history")
 def history(request: Request):

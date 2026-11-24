@@ -30,6 +30,17 @@ class Settings:
     moses_cmd: str = "moses"
     marian_decoder_cmd: str = "marian-decoder"
     translation_timeout_s: float = 120.0
+    # Complete-passage handling: a multiline text is translated segment
+    # by segment; these limits bound that work per request.
+    max_segments: int = 64
+    max_passage_chars: int = 20000
+    # Translation result cache (SQLite translation_cache table). Only
+    # trained-model outputs are cached, keyed by profile + normalized
+    # source + engine + artifact hash; verified retrieval always runs
+    # live and is never served from this cache.
+    translation_cache_enabled: bool = True
+    # Kraken historical recognition: optional Python package / ketos CLI.
+    kraken_cmd: str = "ketos"
     cors_origins: tuple[str, ...] = ("http://localhost:3000", "http://127.0.0.1:3000")
 
     @classmethod
@@ -52,6 +63,10 @@ class Settings:
             moses_cmd=os.getenv("AHAIET_MOSES_CMD", "moses"),
             marian_decoder_cmd=os.getenv("AHAIET_MARIAN_DECODER_CMD", "marian-decoder"),
             translation_timeout_s=float(os.getenv("AHAIET_TRANSLATION_TIMEOUT_S", "120")),
+            max_segments=_int_env("AHAIET_MAX_SEGMENTS", 64),
+            max_passage_chars=_int_env("AHAIET_MAX_PASSAGE_CHARS", 20000),
+            translation_cache_enabled=os.getenv("AHAIET_TRANSLATION_CACHE", "1") not in ("0", "false", "no"),
+            kraken_cmd=os.getenv("AHAIET_KRAKEN_CMD", "ketos"),
         )
 
 settings = Settings.from_env()

@@ -21,8 +21,52 @@ Both Biblical Hebrew and Biblical Aramaic (in Hebrew script) use the **heb** tra
 
 Current state on the build machine: the heb and eng traineddata files are downloaded (checksums in `artifacts/manifests/models.json`), but the Tesseract **binary** could not be provisioned there (package lists were stale: `apt-get download tesseract-ocr` reported "Unable to locate package", and `apt-get update` did not complete). OCR therefore reports unavailable on that machine until the binary is installed. No OCR measurement has been run; see `docs/VERIFICATION.md` for the measurement commands and expected behaviour.
 
-## Specialized engine
-Kraken adapter (`kraken_adapter.py`) performs an honest import check; no Kraken model is provisioned, so it reports unavailable. A model file plus a successful load would be required before it can report ready.
+## Specialized engine: Kraken (historical recognition)
+The Kraken adapter (`backend/app/services/ocr/kraken_adapter.py`) is a real integration, not a stub: it detects the Kraken Python package and the `ketos` CLI (with the detected version), resolves checkpoints from the models manifest, and recognises through Kraken's documented pipeline — baseline segmentation (blla) followed by the `rpred` recognition iterator over a checkpoint loaded with `load_any`. Imports are version-tolerant across Kraken's documented module layouts; if an installed Kraken exposes none of them, the adapter returns `kraken_adapter_incompatible` with the detected version instead of crashing. Per-line text and character confidences come from the recognition records themselves.
+
+### Script support matrix (computed, never declared)
+`GET /api/scripts` returns the live support matrix, computed by `backend/app/services/ocr/script_profiles.py` from the registry in `script_profiles.json`:
+
+- `hebrew_square` — supported when the Tesseract route is provisioned.
+- `paleo_hebrew`, `imperial_aramaic`, `jewish_babylonian_aramaic_script`, `classical_syriac_estrangela` — supported **only** when all of the following hold at once: an evaluation record exists at `artifacts/benchmarks/htr-eval-<profile>.json`; the record carries a measured CER; and the record's `checkpoint_sha256` equals the hash of a Kraken checkpoint file present on disk for that profile. Anything less reports `unsupported` with the specific missing evidence as the reason. There is no hand-edited support boolean anywhere, and no historical script is supported by default.
+
+`/api/ocr` accepts `engine` (`auto` | `tesseract` | `kraken`) and `script_profile`. Routing never substitutes silently: Tesseract refuses historical script profiles, Kraken refuses profiles the matrix does not compute as supported, and `auto` means Tesseract for `hebrew_square` only — each refusal is an explicit `script_unsupported` error (HTTP 422).
+
+### Provisioning Kraken
+- Windows: `.\scripts\provision-kraken.ps1` — checks for WSL2 and prints the exact in-WSL2 install commands (Kraken is Linux-first; native Windows is not a supported route here).
+- Linux/WSL2: `./scripts/provision-kraken.sh` — installs the backend `kraken` extra into the venv.
+- Manual: `pip install -e "backend[kraken]"`, then confirm `GET /api/capabilities` shows `ocr.kraken.available = true` with the detected version.
+
+Installing Kraken alone changes no support status: a checkpoint and a measured evaluation record are also required.
+
+### Training a Kraken checkpoint
+`training/ocr/train_kraken.py` orchestrates `ketos train` over line-level ground truth:
+
+```
+<data-dir>/
+  provenance.txt     (required: source + licence of images/transcripts)
+  train/  line-0001.png + line-0001.txt  (paired line image + exact transcription)
+  test/   held-out pairs for evaluation
+```
+
+```powershell
+.\scripts\train-kraken.ps1 -Profile paleo_hebrew -DataDir D:\kraken-data\paleo
+```
+```bash
+./scripts/train-kraken.sh paleo_hebrew /path/to/kraken-data/paleo
+# fine-tune from an existing local checkpoint:
+./scripts/train-kraken.sh paleo_hebrew /path/to/kraken-data/paleo /path/to/base.mlmodel
+```
+
+The run exports `artifacts/models/kraken/<profile>/model.mlmodel` plus `training_card.json` (data provenance, line count, tool version, checkpoint sha256) and flips the manifest entry to provisioned. Unprovenanced or unpaired data is refused.
+
+### Evaluating a checkpoint
+```bash
+python training/evaluation/evaluate_htr.py --profile paleo_hebrew \
+  --checkpoint artifacts/models/kraken/paleo_hebrew/model.mlmodel \
+  --test-dir /path/to/kraken-data/paleo/test
+```
+This writes `artifacts/benchmarks/htr-eval-paleo_hebrew.json` with the measured CER/WER (micro-averaged Levenshtein) and the checkpoint hash — the record the support matrix reads. No checkpoint, no labelled data, and no scores currently exist, so every historical profile reports unsupported.
 
 ## Fixtures and measurement
 `training/ocr/generate_fixtures.py` renders labelled images (Genesis 1:1 in Hebrew, Daniel 2:4 in Aramaic, both real WLC text from the imported corpus sample) with a Hebrew serif font; ground truth and provenance live in `training/ocr/fixtures/ground_truth.json`. `training/evaluation/evaluate_ocr.py` runs the real OCR service over the fixtures and writes measured CER/WER (Levenshtein, `backend/app/evaluation/metrics.py`) plus raw OCR output to `training/ocr/fixtures/ocr_measurement.json`. No scores exist until that script is run on a machine with the binary.

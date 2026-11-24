@@ -206,6 +206,13 @@ def import_into_db(db_path: Path, passages: list[dict]) -> dict:
         conn.commit()
     finally:
         conn.close()
+    # The retrieval service memoises verified-passage lookups in-process;
+    # a fresh import must not be hidden behind a stale cached miss.
+    try:
+        from app.services.retrieval.service import invalidate_lookup_cache
+        invalidate_lookup_cache()
+    except Exception:
+        pass
     return {"passages_imported": len(passages), "words_imported": n_words}
 
 def download_sources(osis_dir: Path, corpus_dir: Path) -> None:

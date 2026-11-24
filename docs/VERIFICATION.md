@@ -172,5 +172,94 @@ cd frontend; npm run typecheck; npm run test; npm run build
 ```
 Expected: typecheck clean; vitest passes including the export case asserting engine/model-version/coverage lines in TXT and JSON exports; in the running UI, a translation produced by a trained model shows the engine, model version, artifact hash prefix, evaluation state, and source-token coverage with OOV words under the translation; a verified-reference result shows its citation panel as before.
 
+## Hybrid verification, complete passages, historical recognition, performance (coded; NOT YET RUN)
+
+Everything in this section is code-complete and syntax-checked only. No test, training run, evaluation, or inference in this section has been executed. Expected behaviour is stated per case; record the actual results in docs/BUILD_STATE.md when you run them.
+
+### Backend cases (verification, passages, routing, cache, Kraken paths)
+
+```powershell
+# PowerShell (repo root)
+cd backend; .\.venv\Scripts\python.exe -m pytest tests\test_hybrid.py -q
+```
+```bash
+# bash (repo root)
+cd backend && .venv/bin/python -m pytest tests/test_hybrid.py -q
+```
+
+| Case | Expected behaviour |
+|---|---|
+| Negation mismatch | Source "לֹא תִּגְנֹב" with candidate "You shall steal": the `negation` check is `warn` with source_negations=1, candidate_negations=0. With "You shall not steal" the check is `pass`. |
+| Number mismatch | Source "שְׁנֵי לֻחֹת" with candidate "three tablets": the `numbers` check is `warn`, missing_values=[2], extra_values=[3]. With "two tablets" it is `pass`. |
+| Coverage with the committed fixture corpus | Genesis 1:1 source + its real WEB English: `source_coverage` is `pass` with coverage_ratio ≥ 0.6. An unrelated English candidate yields `warn`/`fail` with the uncovered source tokens listed explicitly. |
+| Coverage without a corpus | On an empty database, `source_coverage` is `not_applicable` (never a guessed score), and the report's overall_status is never the word "correct" — the status vocabulary is no_issues_found / warnings / high_risk. |
+| Reference agreement divergence | Genesis 1:1 source + an unrelated candidate + the verse's WEB English as the verified reference: `reference_agreement` is `warn` (evidence only — never a rejection). |
+| Translate response shape | POST /api/translate for Genesis 1:1 returns `verification` (checks incl. source_coverage), `provenance` (engine verified_reference, retrieval_citation.reference "Genesis 1:1"), and `cached=false`. |
+| Evaluated beats unevaluated | With a Moses artifact (no recorded metrics) and a Marian artifact (chrF++ recorded in its model card) as test doubles, translation uses Marian, `unevaluated_model=false`, provenance.evaluation_state="evaluated". |
+| Unevaluated engine flagged | With only the unevaluated Moses test double, the response has `unevaluated_model=true`, a warning naming it, and provenance carrying engine + dataset card hash. |
+| Variant never a translation | A pointing-variant of Genesis 1:1 returns HTTP 503; the body has no english_translation; any variant_candidate is labelled match_type "normalized_variant". |
+| Passage partial | Genesis 1:1 + an unseen line: status `partial`; segment 0 translated with the cited English; segment 1 `unavailable` with english_translation null; the reassembled English keeps the line structure with the untranslated line empty. |
+| Passage completed / failed | Two known verses (with the blank line between them preserved) -> `completed`. Two unknown lines -> `failed` with english_translation null and no fabricated segment. |
+| Passage limits | With AHAIET_MAX_SEGMENTS=1, a two-line passage fails with error code `too_many_segments`; over-length input fails with `passage_too_long`. |
+| Translation cache | Two identical trained-model requests (echo test double counting its invocations): the second has `cached=true`, provenance keeps the original engine, and the engine ran exactly once. Set AHAIET_TRANSLATION_CACHE=false to disable. |
+| Retrieval never cached | Two identical verified-reference requests: both `cached=false`, and the translation_cache table stays empty — the cache is consulted only after retrieval misses. |
+| Process stage timings | POST /api/process response and GET /api/jobs/{id}/result both carry `stage_timings_ms` (an object; on this machine, where OCR is unavailable, the job still fails honestly at the OCR stage and the timings object is present). |
+
+### Script support matrix cases
+
+```powershell
+# PowerShell — backend running (scripts\start-backend.ps1)
+Invoke-RestMethod http://127.0.0.1:8000/api/scripts | ConvertTo-Json -Depth 6
+```
+```bash
+# bash
+curl -s http://127.0.0.1:8000/api/scripts
+```
+
+| Case | Expected behaviour |
+|---|---|
+| Default matrix | hebrew_square follows Tesseract provisioning; paleo_hebrew, imperial_aramaic, jewish_babylonian_aramaic_script, classical_syriac_estrangela are all `unsupported` with a reason naming the missing evaluation record. |
+| No silent fallback | POST /api/ocr with engine=kraken + script_profile=paleo_hebrew returns 422 `script_unsupported`; engine=tesseract + script_profile=imperial_aramaic also returns 422 `script_unsupported`. |
+| Support only from evidence (test-local) | The test suite fabricates a checkpoint file + evaluation record inside a temp directory: a record whose checkpoint_sha256 does not match the file on disk leaves the profile `unsupported`; a matching record flips it to `supported` with the CER from the record. This fabrication exists only in the test — nothing shipped claims support. |
+| Kraken adapter honest paths | With the Kraken package absent, `kraken_adapter.status` reports available=false with a reason, and recognize() raises `kraken_unavailable` (or `kraken_checkpoint_missing` when the package exists but the file does not). With a Kraken whose documented pipeline callables are missing, the adapter raises the incompatible error rather than crashing. |
+
+### Kraken provisioning, training, and HTR evaluation (commands; nothing run)
+
+```powershell
+# PowerShell (repo root) — checks WSL2 and prints the in-WSL2 install commands
+.\scripts\provision-kraken.ps1
+# Train inside WSL2 via the wrapper (data dir must contain provenance.txt + train\ line pairs)
+.\scripts\train-kraken.ps1 -Profile paleo_hebrew -DataDir D:\kraken-data\paleo
+```
+```bash
+# bash (repo root, Linux/WSL2)
+./scripts/provision-kraken.sh
+./scripts/train-kraken.sh paleo_hebrew /path/to/kraken-data/paleo
+# fine-tune from an existing local checkpoint:
+./scripts/train-kraken.sh paleo_hebrew /path/to/kraken-data/paleo /path/to/base.mlmodel
+# evaluate the exported checkpoint on held-out labelled lines:
+backend/.venv/bin/python training/evaluation/evaluate_htr.py --profile paleo_hebrew \
+  --checkpoint artifacts/models/kraken/paleo_hebrew/model.mlmodel \
+  --test-dir /path/to/kraken-data/paleo/test
+# training-side unit tests for the score aggregation:
+backend/.venv/bin/python -m pytest training/tests/test_evaluate_htr.py -q
+```
+
+| Case | Expected behaviour |
+|---|---|
+| Provisioning | The package + `ketos` become available; GET /api/capabilities shows ocr.kraken.available=true with the detected version. No script status changes — provisioning alone is not support. |
+| Training without provenance | train_kraken.py exits 2 naming the missing provenance.txt / line pairs; nothing is exported. |
+| Training without ketos | Exits 3 with the provisioning instructions; nothing is exported. |
+| Training run | ketos trains; the newest checkpoint is exported to artifacts/models/kraken/<profile>/model.mlmodel with training_card.json (provenance, line count, checkpoint sha256) and the manifest entry flips to provisioned. The profile is STILL `unsupported` in /api/scripts until an evaluation record exists. |
+| HTR evaluation | evaluate_htr.py writes artifacts/benchmarks/htr-eval-<profile>.json with measured CER/WER, the checkpoint sha256, line counts, and per-line detail; only then does /api/scripts report the profile `supported`. With no Kraken installed it exits 3; with unpaired test data it exits 2 listing the problems. |
+| HTR score unit tests | Identical reference/hypothesis -> CER 0 / WER 0; one substitution in 3 chars -> CER 0.3333; aggregation is micro-averaged over total reference length; orphan line images are reported as data problems. |
+
+### Frontend checks (verification panel, segments, scripts, export)
+
+```powershell
+cd frontend; npm run typecheck; npm run test; npm run build
+```
+Expected: typecheck clean; vitest passes including the export case asserting the verification summary + provenance in TXT and JSON exports; in the running UI: the translation panel shows provenance (engine, evaluation state, citation, cache/unevaluated flags), the verification checks list with the plain-language note that checks flag risks and do not prove correctness, a per-line segment breakdown with a partial banner when a passage is partial, collapsible stage timings, the script support matrix with unsupported reasons, and OCR engine/script selectors whose unsupported choices produce the explicit backend error rather than a silent substitution.
+
 ## Historical record — foundation build (actually run at that time)
 Recorded when the foundation was built, before the code-only instruction: backend pytest 15 passed; frontend typecheck clean; vitest 2 passed; Next.js build succeeded; live smoke: `/api/health` ok, real PNG upload 200, `/api/translate` honest 503. Tesseract was absent on that machine, so OCR was unavailable — that absence is what the OCR provisioning above addresses.

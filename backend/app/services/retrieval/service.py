@@ -13,11 +13,49 @@ Hebrew index and vice versa.
 """
 from __future__ import annotations
 import sqlite3
+import threading
+from collections import OrderedDict
 from pathlib import Path
 from app.services.language.normalize import normalize, normalize_nodiac, tokens
 from app.storage import db as store
 
 VARIANT_OVERLAP_THRESHOLD = 0.8
+
+# ---------------------------------------------------------------------------
+# Verified-passage lookup cache (in-process LRU)
+#
+# lookup() is called for every translation request and scans for variant
+# candidates, so verified-passage results are memoised per
+# (database, profile, normalized key). The cache holds lookup RESULTS
+# only — it never changes what counts as a match. The corpus importer
+# calls invalidate_lookup_cache() after every import so a stale miss can
+# never hide a newly imported passage.
+# ---------------------------------------------------------------------------
+_LOOKUP_CACHE_MAX = 512
+_lookup_cache: "OrderedDict[tuple[str, str, str], dict]" = OrderedDict()
+_lookup_cache_lock = threading.Lock()
+
+
+def invalidate_lookup_cache() -> None:
+    """Drop every memoised lookup result (called by the corpus importer)."""
+    with _lookup_cache_lock:
+        _lookup_cache.clear()
+
+
+def _cache_get(key: tuple[str, str, str]) -> dict | None:
+    with _lookup_cache_lock:
+        value = _lookup_cache.get(key)
+        if value is not None:
+            _lookup_cache.move_to_end(key)
+        return value
+
+
+def _cache_put(key: tuple[str, str, str], value: dict) -> None:
+    with _lookup_cache_lock:
+        _lookup_cache[key] = value
+        _lookup_cache.move_to_end(key)
+        while len(_lookup_cache) > _LOOKUP_CACHE_MAX:
+            _lookup_cache.popitem(last=False)
 
 def corpus_counts(db_path: Path) -> dict:
     if not Path(db_path).exists():
@@ -44,8 +82,20 @@ def _reference_of(row: sqlite3.Row, match_type: str) -> dict:
 
 def lookup(db_path: Path, text: str, language_profile: str) -> dict:
     """Look up `text` in one profile's index only.
-    Returns {match: {...}|None, variant_candidate: {...}|None}."""
+    Returns {match: {...}|None, variant_candidate: {...}|None}.
+    Results are memoised in the in-process LRU above; the corpus
+    importer invalidates the cache after each import."""
     norm = normalize(text)
+    cache_key = (str(db_path), language_profile, norm)
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+    result = _lookup_uncached(db_path, text, language_profile, norm)
+    _cache_put(cache_key, result)
+    return result
+
+
+def _lookup_uncached(db_path: Path, text: str, language_profile: str, norm: str) -> dict:
     nodiac = normalize_nodiac(text)
     conn = store.connect(db_path)
     try:

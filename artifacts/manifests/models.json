@@ -24,59 +24,152 @@
       "version": null
     },
     {
+      "artifact_layout": {
+        "artifact_dir": "artifacts/models/kraken/paleo_hebrew",
+        "produced_by": "training/ocr/train_kraken.py (scripts/train-kraken.ps1 / .sh)",
+        "required_files": [
+          {
+            "path": "model.mlmodel",
+            "role": "checkpoint"
+          },
+          {
+            "path": "training_card.json",
+            "role": "training_card"
+          }
+        ],
+        "runtime": "backend loads the checkpoint through the Kraken Python API (kraken.lib.models.load_any) when the package is installed; support additionally requires the measured evaluation record described in the notes"
+      },
       "checksum": null,
       "engine": "kraken",
-      "id": "kraken-historical-hebrew",
+      "id": "kraken-paleo-hebrew",
       "kind": "ocr",
       "language_profile": null,
-      "notes": "No Kraken model has been trained or downloaded; the adapter performs an honest import/model check only.",
+      "notes": "No Kraken checkpoint for Paleo-Hebrew has been trained or provisioned. Training pipeline: training/ocr/train_kraken.py (line-level ground truth -> ketos train -> checkpoint + training card). This profile reports unsupported until a measured evaluation record (artifacts/benchmarks/htr-eval-paleo_hebrew.json) references a checkpoint present on disk by hash.",
       "path": null,
+      "script_profile": "paleo_hebrew",
       "status": "not_provisioned",
       "version": null
     },
     {
+      "artifact_layout": {
+        "artifact_dir": "artifacts/models/kraken/imperial_aramaic",
+        "produced_by": "training/ocr/train_kraken.py (scripts/train-kraken.ps1 / .sh)",
+        "required_files": [
+          {
+            "path": "model.mlmodel",
+            "role": "checkpoint"
+          },
+          {
+            "path": "training_card.json",
+            "role": "training_card"
+          }
+        ],
+        "runtime": "backend loads the checkpoint through the Kraken Python API (kraken.lib.models.load_any) when the package is installed; support additionally requires the measured evaluation record described in the notes"
+      },
+      "checksum": null,
+      "engine": "kraken",
+      "id": "kraken-imperial-aramaic",
+      "kind": "ocr",
+      "language_profile": null,
+      "notes": "No Kraken checkpoint for Imperial Aramaic has been trained or provisioned. Training pipeline: training/ocr/train_kraken.py (line-level ground truth -> ketos train -> checkpoint + training card). This profile reports unsupported until a measured evaluation record (artifacts/benchmarks/htr-eval-imperial_aramaic.json) references a checkpoint present on disk by hash.",
+      "path": null,
+      "script_profile": "imperial_aramaic",
+      "status": "not_provisioned",
+      "version": null
+    },
+    {
+      "artifact_layout": {
+        "artifact_dir": "artifacts/models/kraken/jewish_babylonian_aramaic_script",
+        "produced_by": "training/ocr/train_kraken.py (scripts/train-kraken.ps1 / .sh)",
+        "required_files": [
+          {
+            "path": "model.mlmodel",
+            "role": "checkpoint"
+          },
+          {
+            "path": "training_card.json",
+            "role": "training_card"
+          }
+        ],
+        "runtime": "backend loads the checkpoint through the Kraken Python API (kraken.lib.models.load_any) when the package is installed; support additionally requires the measured evaluation record described in the notes"
+      },
+      "checksum": null,
+      "engine": "kraken",
+      "id": "kraken-jewish-babylonian-aramaic-script",
+      "kind": "ocr",
+      "language_profile": null,
+      "notes": "No Kraken checkpoint for Jewish Babylonian Aramaic manuscript hands has been trained or provisioned. Training pipeline: training/ocr/train_kraken.py (line-level ground truth -> ketos train -> checkpoint + training card). This profile reports unsupported until a measured evaluation record (artifacts/benchmarks/htr-eval-jewish_babylonian_aramaic_script.json) references a checkpoint present on disk by hash.",
+      "path": null,
+      "script_profile": "jewish_babylonian_aramaic_script",
+      "status": "not_provisioned",
+      "version": null
+    },
+    {
+      "artifact_layout": {
+        "artifact_dir": "artifacts/models/kraken/classical_syriac_estrangela",
+        "produced_by": "training/ocr/train_kraken.py (scripts/train-kraken.ps1 / .sh)",
+        "required_files": [
+          {
+            "path": "model.mlmodel",
+            "role": "checkpoint"
+          },
+          {
+            "path": "training_card.json",
+            "role": "training_card"
+          }
+        ],
+        "runtime": "backend loads the checkpoint through the Kraken Python API (kraken.lib.models.load_any) when the package is installed; support additionally requires the measured evaluation record described in the notes"
+      },
+      "checksum": null,
+      "engine": "kraken",
+      "id": "kraken-classical-syriac-estrangela",
+      "kind": "ocr",
+      "language_profile": null,
+      "notes": "No Kraken checkpoint for Classical Syriac (Estrangela) has been trained or provisioned. Training pipeline: training/ocr/train_kraken.py (line-level ground truth -> ketos train -> checkpoint + training card). This profile reports unsupported until a measured evaluation record (artifacts/benchmarks/htr-eval-classical_syriac_estrangela.json) references a checkpoint present on disk by hash.",
+      "path": null,
+      "script_profile": "classical_syriac_estrangela",
+      "status": "not_provisioned",
+      "version": null
+    },
+    {
+      "artifact_layout": {
+        "artifact_dir": "artifacts/models/smt/<profile-short>",
+        "produced_by": "training/smt/train_smt.py (WSL2-first; scripts/smt-train.ps1 / .sh)",
+        "required_files": [
+          {
+            "path": "moses.ini",
+            "role": "config"
+          },
+          {
+            "path": "phrase-table.gz (or binarised phrase table)",
+            "role": "phrase_table"
+          },
+          {
+            "path": "reordering-table.* (when produced)",
+            "role": "reordering_table"
+          },
+          {
+            "path": "lm.binary (or lm.arpa)",
+            "role": "language_model"
+          },
+          {
+            "path": "vocabulary.source.txt",
+            "role": "vocabulary_source"
+          },
+          {
+            "path": "model_card.json",
+            "role": "model_card"
+          }
+        ],
+        "runtime": "backend runs a locally installed moses binary (AHAIET_MOSES_CMD or PATH) with the exported moses.ini; WSL2 is not needed at runtime"
+      },
       "checksum": null,
       "engine": "moses",
+      "evaluation": null,
       "id": "moses-biblical-hebrew-en",
       "kind": "translation",
       "language_profile": "biblical_hebrew",
-      "notes": "No Moses model has been trained yet. Training pipeline: training/smt/train_smt.py (WSL2-first, docs/TRAINING.md). The Hebrew profile has a prepared training split; the export step flips this entry to provisioned only after a real run.",
-      "path": null,
-      "status": "not_provisioned",
-      "version": null,
-      "artifact_layout": {
-        "artifact_dir": "artifacts/models/smt/<profile-short>",
-        "required_files": [
-          {
-            "path": "moses.ini",
-            "role": "config"
-          },
-          {
-            "path": "phrase-table.gz (or binarised phrase table)",
-            "role": "phrase_table"
-          },
-          {
-            "path": "reordering-table.* (when produced)",
-            "role": "reordering_table"
-          },
-          {
-            "path": "lm.binary (or lm.arpa)",
-            "role": "language_model"
-          },
-          {
-            "path": "vocabulary.source.txt",
-            "role": "vocabulary_source"
-          },
-          {
-            "path": "model_card.json",
-            "role": "model_card"
-          }
-        ],
-        "produced_by": "training/smt/train_smt.py (WSL2-first; scripts/smt-train.ps1 / .sh)",
-        "runtime": "backend runs a locally installed moses binary (AHAIET_MOSES_CMD or PATH) with the exported moses.ini; WSL2 is not needed at runtime"
-      },
       "model_card_contract": {
-        "written_by": "the training orchestrator at export time (training/common/manifest.py)",
         "fields": [
           "engine",
           "language_profile",
@@ -90,50 +183,50 @@
           "license",
           "provenance",
           "metrics (null until the evaluation harness records real scores)"
-        ]
+        ],
+        "written_by": "the training orchestrator at export time (training/common/manifest.py)"
       },
-      "evaluation": null,
-      "selection": null
+      "notes": "No Moses model has been trained yet. Training pipeline: training/smt/train_smt.py (WSL2-first, docs/TRAINING.md). The Hebrew profile has a prepared training split; the export step flips this entry to provisioned only after a real run.",
+      "path": null,
+      "selection": null,
+      "status": "not_provisioned",
+      "version": null
     },
     {
+      "artifact_layout": {
+        "artifact_dir": "artifacts/models/nmt/<profile-short>",
+        "produced_by": "training/nmt/train_nmt.py (scripts/nmt-train.ps1 / .sh)",
+        "required_files": [
+          {
+            "path": "model.npz",
+            "role": "checkpoint"
+          },
+          {
+            "path": "vocab.spm",
+            "role": "vocabulary"
+          },
+          {
+            "path": "decoder-config.yml",
+            "role": "decoder_config"
+          },
+          {
+            "path": "vocabulary.source.txt",
+            "role": "vocabulary_source"
+          },
+          {
+            "path": "model_card.json",
+            "role": "model_card"
+          }
+        ],
+        "runtime": "backend runs a locally installed marian-decoder binary (AHAIET_MARIAN_DECODER_CMD or PATH) with the exported decoder-config.yml; CPU-only unless the decoder config selects a GPU"
+      },
       "checksum": null,
       "engine": "marian",
+      "evaluation": null,
       "id": "marian-biblical-hebrew-en",
       "kind": "translation",
       "language_profile": "biblical_hebrew",
-      "notes": "No Marian checkpoint exists yet. Training pipeline: training/nmt/train_nmt.py with training/nmt/config-hebrew.yml (CPU) or config-hebrew-gpu.yml. The data gate (default minimum 500 training pairs) applies before any training starts.",
-      "path": null,
-      "status": "not_provisioned",
-      "version": null,
-      "artifact_layout": {
-        "artifact_dir": "artifacts/models/nmt/<profile-short>",
-        "required_files": [
-          {
-            "path": "model.npz",
-            "role": "checkpoint"
-          },
-          {
-            "path": "vocab.spm",
-            "role": "vocabulary"
-          },
-          {
-            "path": "decoder-config.yml",
-            "role": "decoder_config"
-          },
-          {
-            "path": "vocabulary.source.txt",
-            "role": "vocabulary_source"
-          },
-          {
-            "path": "model_card.json",
-            "role": "model_card"
-          }
-        ],
-        "produced_by": "training/nmt/train_nmt.py (scripts/nmt-train.ps1 / .sh)",
-        "runtime": "backend runs a locally installed marian-decoder binary (AHAIET_MARIAN_DECODER_CMD or PATH) with the exported decoder-config.yml; CPU-only unless the decoder config selects a GPU"
-      },
       "model_card_contract": {
-        "written_by": "the training orchestrator at export time (training/common/manifest.py)",
         "fields": [
           "engine",
           "language_profile",
@@ -147,23 +240,19 @@
           "license",
           "provenance",
           "metrics (null until the evaluation harness records real scores)"
-        ]
+        ],
+        "written_by": "the training orchestrator at export time (training/common/manifest.py)"
       },
-      "evaluation": null,
-      "selection": null
+      "notes": "No Marian checkpoint exists yet. Training pipeline: training/nmt/train_nmt.py with training/nmt/config-hebrew.yml (CPU) or config-hebrew-gpu.yml. The data gate (default minimum 500 training pairs) applies before any training starts.",
+      "path": null,
+      "selection": null,
+      "status": "not_provisioned",
+      "version": null
     },
     {
-      "checksum": null,
-      "engine": "moses",
-      "id": "moses-biblical-aramaic-en",
-      "kind": "translation",
-      "language_profile": "biblical_aramaic",
-      "notes": "No Moses model has been trained. Under the recorded split strategy all Aramaic passages are in the held-out test partition, so this profile currently has no training data; the SMT orchestrator stops with that explanation until the strategy is revised or more Aramaic books are imported.",
-      "path": null,
-      "status": "not_provisioned",
-      "version": null,
       "artifact_layout": {
         "artifact_dir": "artifacts/models/smt/<profile-short>",
+        "produced_by": "training/smt/train_smt.py (WSL2-first; scripts/smt-train.ps1 / .sh)",
         "required_files": [
           {
             "path": "moses.ini",
@@ -190,11 +279,15 @@
             "role": "model_card"
           }
         ],
-        "produced_by": "training/smt/train_smt.py (WSL2-first; scripts/smt-train.ps1 / .sh)",
         "runtime": "backend runs a locally installed moses binary (AHAIET_MOSES_CMD or PATH) with the exported moses.ini; WSL2 is not needed at runtime"
       },
+      "checksum": null,
+      "engine": "moses",
+      "evaluation": null,
+      "id": "moses-biblical-aramaic-en",
+      "kind": "translation",
+      "language_profile": "biblical_aramaic",
       "model_card_contract": {
-        "written_by": "the training orchestrator at export time (training/common/manifest.py)",
         "fields": [
           "engine",
           "language_profile",
@@ -208,23 +301,19 @@
           "license",
           "provenance",
           "metrics (null until the evaluation harness records real scores)"
-        ]
+        ],
+        "written_by": "the training orchestrator at export time (training/common/manifest.py)"
       },
-      "evaluation": null,
-      "selection": null
+      "notes": "No Moses model has been trained. Under the recorded split strategy all Aramaic passages are in the held-out test partition, so this profile currently has no training data; the SMT orchestrator stops with that explanation until the strategy is revised or more Aramaic books are imported.",
+      "path": null,
+      "selection": null,
+      "status": "not_provisioned",
+      "version": null
     },
     {
-      "checksum": null,
-      "engine": "marian",
-      "id": "marian-biblical-aramaic-en",
-      "kind": "translation",
-      "language_profile": "biblical_aramaic",
-      "notes": "No Marian checkpoint exists. The NMT data gate is expected to write a not-ready report for this profile (0 training pairs in the present corpus, below the configured minimum); see training/nmt/train_nmt.py and docs/TRAINING.md.",
-      "path": null,
-      "status": "not_provisioned",
-      "version": null,
       "artifact_layout": {
         "artifact_dir": "artifacts/models/nmt/<profile-short>",
+        "produced_by": "training/nmt/train_nmt.py (scripts/nmt-train.ps1 / .sh)",
         "required_files": [
           {
             "path": "model.npz",
@@ -247,11 +336,15 @@
             "role": "model_card"
           }
         ],
-        "produced_by": "training/nmt/train_nmt.py (scripts/nmt-train.ps1 / .sh)",
         "runtime": "backend runs a locally installed marian-decoder binary (AHAIET_MARIAN_DECODER_CMD or PATH) with the exported decoder-config.yml; CPU-only unless the decoder config selects a GPU"
       },
+      "checksum": null,
+      "engine": "marian",
+      "evaluation": null,
+      "id": "marian-biblical-aramaic-en",
+      "kind": "translation",
+      "language_profile": "biblical_aramaic",
       "model_card_contract": {
-        "written_by": "the training orchestrator at export time (training/common/manifest.py)",
         "fields": [
           "engine",
           "language_profile",
@@ -265,10 +358,14 @@
           "license",
           "provenance",
           "metrics (null until the evaluation harness records real scores)"
-        ]
+        ],
+        "written_by": "the training orchestrator at export time (training/common/manifest.py)"
       },
-      "evaluation": null,
-      "selection": null
+      "notes": "No Marian checkpoint exists. The NMT data gate is expected to write a not-ready report for this profile (0 training pairs in the present corpus, below the configured minimum); see training/nmt/train_nmt.py and docs/TRAINING.md.",
+      "path": null,
+      "selection": null,
+      "status": "not_provisioned",
+      "version": null
     }
   ]
 }

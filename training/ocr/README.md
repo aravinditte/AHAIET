@@ -1,2 +1,4 @@
 # OCR training & fixtures
-generate_fixtures.py renders labelled fixture images from real corpus passages (training/datasets/fixtures/sample_passages.jsonl) with a Hebrew serif font. fixtures/ground_truth.json holds the ground truth + provenance; fixture PNGs are produced by running the generator. No Kraken fine-tune exists yet.
+generate_fixtures.py renders labelled fixture images from real corpus passages (training/datasets/fixtures/sample_passages.jsonl) with a Hebrew serif font. fixtures/ground_truth.json holds the ground truth + provenance; fixture PNGs are produced by running the generator.
+
+train_kraken.py trains or fine-tunes a Kraken historical-script checkpoint with `ketos train` from line-level ground truth (paired line images + .txt transcripts under a data directory that must carry provenance.txt), exports the checkpoint + training_card.json under artifacts/models/kraken/<profile>/, and flips the manifest entry. Evaluation lives in training/evaluation/evaluate_htr.py and writes the measured record the backend's script support matrix reads. No Kraken checkpoint has been trained yet; see docs/OCR.md for the full workflow and the support rule.

@@ -67,6 +67,10 @@ def capabilities(request: Request):
                         "reason": None if (any_model or corpus["status"] == "available") else
                         "No corpus imported and no translation model artifact is provisioned (see artifacts/manifests/models.json)."},
         "languages": SUPPORTED,
+        "history": {"enabled": s.history_enabled,
+                    "status": "enabled" if s.history_enabled else "disabled"},
+        "retention": {"days": s.retention_days,
+                      "sweep_on_startup": s.retention_sweep_on_startup},
     }
 
 @router.get("/languages")
@@ -262,9 +266,13 @@ def process(request: Request, body: ProcessRequest):
         conn.execute("UPDATE jobs SET status=?,stage=?,error=?,result_json=?,stage_timings_json=?,updated_at=datetime('now') WHERE id=?",
                      (status, stage, error, json.dumps(result, ensure_ascii=False) if result else None,
                       json.dumps(timings), job_id))
-        conn.execute("INSERT INTO history(upload_id,language_profile,status,detail) VALUES (?,?,?,?)",
-                     (body.upload_id, body.language_profile, status, error))
-        conn.commit()
+        if s.history_enabled:
+            # Processing history is optional (AHAIET_HISTORY_ENABLED).
+            # Only metadata is ever recorded — ids, profile, status —
+            # never source text, OCR output, or translations.
+            conn.execute("INSERT INTO history(upload_id,language_profile,status,detail) VALUES (?,?,?,?)",
+                         (body.upload_id, body.language_profile, status, error))
+            conn.commit()
     finally:
         conn.close()
     return {"job_id": job_id, "status": status, "stage": stage, "error": error,
@@ -297,12 +305,18 @@ def get_job_result(request: Request, job_id: str):
 @router.get("/history")
 def history(request: Request):
     s = _settings(request)
+    if not s.history_enabled:
+        # Explicit disabled state: history recording is off, so there is
+        # nothing to list. This is a configuration fact, not an error.
+        return {"history": [], "enabled": False, "status": "disabled",
+                "reason": "Processing history is disabled by configuration "
+                          "(AHAIET_HISTORY_ENABLED=false); no history is recorded."}
     conn = store.connect(s.db_path)
     try:
         rows = [dict(r) for r in conn.execute("SELECT * FROM history ORDER BY id DESC LIMIT 200")]
     finally:
         conn.close()
-    return {"history": rows}
+    return {"history": rows, "enabled": True, "status": "enabled"}
 
 @router.delete("/history/{record_id}")
 def delete_history(request: Request, record_id: int):

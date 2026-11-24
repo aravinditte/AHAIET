@@ -261,5 +261,109 @@ cd frontend; npm run typecheck; npm run test; npm run build
 ```
 Expected: typecheck clean; vitest passes including the export case asserting the verification summary + provenance in TXT and JSON exports; in the running UI: the translation panel shows provenance (engine, evaluation state, citation, cache/unevaluated flags), the verification checks list with the plain-language note that checks flag risks and do not prove correctness, a per-line segment breakdown with a partial banner when a passage is partial, collapsible stage timings, the script support matrix with unsupported reasons, and OCR engine/script selectors whose unsupported choices produce the explicit backend error rather than a silent substitution.
 
+## Security, offline, browser E2E, and CI cases (not yet run)
+
+Added with the security and release hardening work. Everything in this
+section is **not yet run**; run it and record actual results in
+docs/BUILD_STATE.md.
+
+### Dependency hygiene (no network)
+
+```powershell
+scripts\check-dependencies.ps1            # bash: ./scripts/check-dependencies.sh
+```
+Expected: a table of declared bounds vs installed versions from the
+backend environment; every row OK, or a clear MISMATCH line naming the
+package; exit code 0 unless `--strict` is passed with a mismatch.
+
+### Backend security/offline/text/integration suites
+
+```powershell
+cd backend
+python -m pytest tests\test_security.py tests\test_offline.py tests\test_text_processing.py tests\test_integration.py -q
+```
+
+| Case | Expected behaviour |
+|---|---|
+| Security headers | /api/health and a 404 both carry nosniff, DENY, no-referrer, CSP default-src 'self' |
+| CORS | Origin http://localhost:3000 is allowed; http://evil.example gets no allow-origin header and no preflight grant |
+| Rate limit | With a limit of 3/min, the 4th POST /api/translate returns 429, code rate_limited, Retry-After ≥ 1; health is unaffected |
+| Body ceiling | With AHAIET_REQUEST_MAX_BYTES equivalent of 64, an oversized JSON POST returns 413 request_too_large |
+| Retention dry-run | On seeded tmp data (one 90-day-old upload + history row, one fresh of each), dry-run reports 1 upload + 1 history deletion and deletes nothing |
+| Retention sweep | The real sweep deletes only the aged file/row; the fresh ones remain |
+| History disabled | With history disabled: GET /api/history returns enabled:false + status disabled; a process run writes zero history rows |
+| Offline static scan | `python -m app.offline_check` exits 0; the only findings are the allowlisted setup-only importer |
+| Offline runtime | With socket.connect blocked, health/capabilities pass and the fixture Genesis 1:1 verified translation returns 200 with the corpus English |
+| Text processing | NFC composes; niqqud preserved in exact keys and stripped only in nodiac keys; maqqef splits; final letters fold only in search keys; passage split/reassemble preserves order and blank-line gaps |
+| Morphology separation | מַלְכָּא is found via the Aramaic adapter and not_found via the Hebrew one (and vice versa for אֱלֹהִים); unsupported profile → unsupported_language |
+| Retrieval tiers | Exact source → exact; diacritic-stripped → normalized; one word changed → no match (variant candidate at most); cross-profile lookups never match |
+| Input validation | empty_upload, upload_too_large, unsupported_format (real GIF bytes), invalid_image, image_too_many_pixels each surface with their exact code |
+| TSV parser | The recorded TSV fixture string parses to two reading-order lines with per-word confidences and the rounded mean (parser fixture — not OCR output, no accuracy claim) |
+| Upload round-trip | Uploaded PNG bytes come back byte-identical from GET /api/uploads/{id}; unknown/traversal ids never serve a file |
+| Correction flow | Garbled raw text + the fixture's corrected text translates via the corrected text; the response preserves both original_ocr_text and corrected_source_text |
+| Model-required cases | OCR with the real Tesseract binary and real-artifact inference are marked model_required: deselected by `-m "not model_required"`, and where selected without prerequisites they skip naming the exact missing prerequisite |
+
+### Full suites, the way CI runs them
+
+```powershell
+cd backend
+python -m ruff check app tests
+python -m compileall -q app tests
+python -m pytest -q -m "not model_required"     # always-on CI equivalent
+cd ..\frontend
+npm ci; npm run typecheck; npm run test; npm run build
+```
+Expected: ruff clean; compile clean; backend suite passes with
+model_required tests deselected (self-skipping tests report skipped
+with reasons); frontend typecheck clean, vitest passes, production
+build succeeds. The model-tests workflow (manual dispatch) provisions
+Tesseract + the full corpus and runs the complete suite including
+model_required, plus the evaluation harness in report-only mode.
+
+### Offline one-command proof
+
+```powershell
+scripts\verify-offline.ps1            # bash: ./scripts/verify-offline.sh
+```
+Expected: the static scan passes, then the socket-blocked offline
+tests pass; the script prints the optional manual Windows firewall
+steps without executing them and needs no administrator rights.
+
+### Retention maintenance
+
+```powershell
+cd backend
+python -m app.maintenance --dry-run   # counts only
+python -m app.maintenance             # performs the sweep
+```
+Expected: a JSON report with counts per store and bytes reclaimed;
+dry-run changes nothing on disk or in the database.
+
+### Performance smoke (measurements only)
+
+```powershell
+python training\evaluation\perf_smoke.py
+```
+Expected: a JSON report of measured stage timings for this machine,
+with unavailable stages (e.g. OCR without the binary) recorded with
+their honest status. No targets are stated or checked.
+
+### Browser E2E (Playwright; not part of always-on CI)
+
+Prerequisites and full instructions: frontend/e2e/README.md (backend
+running with corpus imported, Tesseract provisioned, fixture images
+generated, `npx playwright install chromium` once).
+
+```powershell
+cd frontend
+npm run test:e2e
+```
+Expected: the Hebrew flow uploads the Genesis fixture, OCRs it,
+translates to the corpus reference English, copies it, and downloads
+ahaiet-result.json; the Aramaic flow selects the Aramaic profile
+explicitly and shows Daniel 2:4's verified translation or the explicit
+error state. Missing fixtures or unprovisioned OCR skip with the
+prerequisite named.
+
 ## Historical record — foundation build (actually run at that time)
 Recorded when the foundation was built, before the code-only instruction: backend pytest 15 passed; frontend typecheck clean; vitest 2 passed; Next.js build succeeded; live smoke: `/api/health` ok, real PNG upload 200, `/api/translate` honest 503. Tesseract was absent on that machine, so OCR was unavailable — that absence is what the OCR provisioning above addresses.

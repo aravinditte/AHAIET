@@ -18,6 +18,7 @@ language profile is recorded on every result; Syriac traineddata is
 never substituted for Hebrew-script Aramaic.
 """
 from __future__ import annotations
+import contextlib
 import tempfile
 from pathlib import Path
 from app.core.config import Settings
@@ -56,6 +57,18 @@ def ocr_status(settings: Settings) -> dict:
     }
 
 
+@contextlib.contextmanager
+def _scratch_file(settings: Settings):
+    """Intermediate processing file inside the configured storage area
+    (settings.temp_dir), never the OS temp directory, so filesystem
+    restrictions and retention cover scratch files too. The caller
+    deletes the file in a finally block; this helper only creates it
+    and hands over the open handle."""
+    settings.temp_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False,
+                                     dir=settings.temp_dir) as tmp:
+        yield tmp
+
 def _tesseract_ready(settings: Settings) -> bool:
     return bool(tesseract_adapter.is_available(settings.tesseract_cmd)
                 and tesseract_adapter.traineddata_available(settings.tesseract_lang,
@@ -92,7 +105,7 @@ def _run_tesseract(image_path: Path, settings: Settings, language_profile: str |
     original_bytes = image_path.read_bytes()
     with timer.stage("preprocessing"):
         derived, report = preprocess_image(original_bytes, preprocessing_profile, settings)
-    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+    with _scratch_file(settings) as tmp:
         tmp.write(derived); tmp_path = Path(tmp.name)
     try:
         with timer.stage("ocr"):
@@ -128,7 +141,7 @@ def _run_kraken(image_path: Path, settings: Settings, language_profile: str | No
     original_bytes = image_path.read_bytes()
     with timer.stage("preprocessing"):
         derived, report = preprocess_image(original_bytes, preprocessing_profile, settings)
-    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+    with _scratch_file(settings) as tmp:
         tmp.write(derived); tmp_path = Path(tmp.name)
     try:
         with timer.stage("ocr"):

@@ -38,7 +38,7 @@ export function SourceEditor({ rawOcr, corrected, onCorrected, uncertainSpans = 
         </p>
       )}
       <h3 className="mt-3 text-sm font-medium"><label htmlFor="corrected">Corrected source text (edit this before translating)</label></h3>
-      <textarea id="corrected" dir="rtl" lang="he" value={corrected} onChange={(e) => onCorrected(e.target.value)}
+      <textarea id="corrected" dir="rtl" lang="he" value={corrected} data-testid="corrected-source" onChange={(e) => onCorrected(e.target.value)}
         rows={6} className="hebrew mt-1 w-full rounded border p-2 text-right dark:bg-neutral-800"
         placeholder="Corrected transcription appears / is typed here" />
     </section>

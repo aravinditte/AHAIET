@@ -110,14 +110,14 @@ export default function Home() {
           </select>
           <p className="text-sm">Historical scripts are recognised only when the support matrix below computes them as supported (trained checkpoint + measured evaluation record). Unsupported choices fail with an explicit error — the app never silently substitutes another engine.</p>
         </div>
-        <button type="button" onClick={extract} disabled={!uploadMeta} className="mt-3 rounded bg-blue-700 px-4 py-2 text-white disabled:opacity-40">Process / Extract Text (OCR)</button>
+        <button type="button" onClick={extract} disabled={!uploadMeta} data-testid="ocr-run" className="mt-3 rounded bg-blue-700 px-4 py-2 text-white disabled:opacity-40">Process / Extract Text (OCR)</button>
       </section>
       <SourceEditor rawOcr={rawOcr} corrected={corrected} onCorrected={setCorrected}
         uncertainSpans={ocrResult?.uncertain_spans ?? []} meanConfidence={ocrResult?.mean_confidence ?? null}
         ocrNote={ocrResult ? `OCR profile: ${ocrResult.ocr_profile}${ocrResult.ocr_lang ? ` (${ocrResult.ocr_lang} traineddata)` : ""}. ${ocrResult.ocr_profile_note}` : null} />
       <section aria-labelledby="trbtn-h" className="rounded border p-4">
         <h2 id="trbtn-h" className="font-semibold">Step 4 — Translate the confirmed transcription</h2>
-        <button type="button" onClick={translate} disabled={!corrected.trim()} className="mt-2 rounded bg-blue-700 px-4 py-2 text-white disabled:opacity-40">Translate</button>
+        <button type="button" onClick={translate} disabled={!corrected.trim()} data-testid="translate-run" className="mt-2 rounded bg-blue-700 px-4 py-2 text-white disabled:opacity-40">Translate</button>
       </section>
       <TranslationPanel result={translationResult} />
       {status && <p role="status" className="rounded border p-2">{status}</p>}

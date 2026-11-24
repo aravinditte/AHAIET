@@ -46,3 +46,21 @@ Pytest, vitest, typecheck, build, and the OCR measurement for the OCR/corpus cod
 - Hebrew: train 693, validation 840 (1 without aligned English → 839 pairs), test 157 (Daniel's Hebrew verses).
 - Aramaic: all 200 passages are in the Daniel test partition (4 without aligned English → 196 test pairs); train 0, validation 0. Any Aramaic training requires a deliberate data decision (more Aramaic books, e.g. Ezra's Aramaic sections, or a revised split strategy) — the pipelines refuse rather than improvise.
 - Thresholds coded: Marian data gate minimum 500 training pairs (configurable, `--min-train-pairs`); SMT minimum 50 pairs (configurable, `--min-train-pairs`, `--allow-small` overrides); small-corpus statement threshold 1,000 training pairs in the dataset card.
+
+## Security and release hardening (coded; not run)
+
+| Area | State | Notes |
+|---|---|---|
+| Security middleware (headers, body ceiling, rate limits) | coded; not run | backend/app/core/security.py (pure ASGI); wired in main.py; limits/origins via config env vars; tests as code in backend/tests/test_security.py |
+| CORS restricted to configured local origins | coded; not run | default localhost:3000 + 127.0.0.1:3000; AHAIET_CORS_ORIGINS; never wildcard by default |
+| Retention maintenance + CLI | coded; not run | backend/app/maintenance.py (`python -m app.maintenance [--dry-run] [--days N]`); optional startup sweep (default off); secure-delete = optional zero-overwrite before unlink, limits documented in docs/SECURITY.md |
+| History opt-out | coded; not run | AHAIET_HISTORY_ENABLED=false → writes no-op, GET /api/history returns explicit disabled state; capabilities report history + retention state |
+| Logging audit | done (code audit) | backend runtime has no content-bearing logging; the only prints in the package are the setup-only corpus importer's counts/metadata output |
+| Temp files | fixed | OCR scratch files now live under the configured storage area (settings.temp_dir) inside try/finally cleanup (services/ocr/service.py) |
+| Dependency bounds + checker | coded; not run | upper bounds in backend/pyproject.toml + training/requirements.txt; scripts/check_dependencies.py (+ .ps1/.sh wrappers) compares installed versions from local metadata, no network |
+| Offline self-check | coded; not run | backend/app/offline_check.py (`python -m app.offline_check`); allowlist = corpus importer + the checker itself; socket-blocked tests as code in backend/tests/test_offline.py; scripts/verify-offline.ps1/.sh |
+| Tests as code (new) | coded; not run | backend/tests/test_text_processing.py, test_security.py, test_offline.py, test_integration.py; model_required pytest marker registered in pyproject; perf harness training/evaluation/perf_smoke.py (measurements only, no targets) |
+| Browser E2E as code | coded; not run | frontend/e2e/ (Playwright config + Hebrew/Aramaic specs + README); @playwright/test devDependency + test:e2e script; NOT in always-on CI; minimal data-testid additions + aria/focus polish in page/components/globals.css |
+| CI workflows | written; not run | .github/workflows/ci.yml (always-on: ruff + compileall + pytest -m "not model_required"; frontend typecheck/vitest/build) and model-tests.yml (workflow_dispatch: Tesseract + corpus import + full suite + evaluation harness report-only). If the GitHub App cannot push workflow files, the owner adds these two files manually via the web UI (see docs/PHASE_HANDOFF.md) |
+| Docs | written | docs/SECURITY.md, OFFLINE_OPERATION.md (expanded), TROUBLESHOOTING.md, ACCEPTANCE_AUDIT.md (14 implemented / 5 blocked / 0 not-yet-implemented, from repo state), RELEASE.md (scope, readiness table from manifests, Windows sequence); contract gained the runtime-network and workflow-file invariants |
+| Manifests | unchanged statuses | consistency pass only: no entry became provisioned; tesseract-heb remains traineddata_downloaded_binary_missing; all translation/Kraken entries not_provisioned |

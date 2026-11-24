@@ -6,6 +6,10 @@ A web application that translates Ancient Hebrew and Ancient Aramaic text captur
 
 > **Honest status:** the monorepo, backend API, upload validation/storage, database, and frontend are real. **OCR** is fully coded (Tesseract TSV with word confidences, preprocessing profiles) and its traineddata is downloaded, but it runs only where a Tesseract binary is installed — on the build machine the binary could not be provisioned, so OCR reports unavailable there (exact blocker in `docs/BUILD_STATE.md`). **Translation** returns a *verified reference* — the cited World English Bible text — when the corrected source exactly matches an imported corpus passage (morphhb/WLC Genesis + Daniel); text with no corpus match gets an honest unavailable response until a general local model is trained. No output is ever fabricated. See `docs/BUILD_STATE.md` and `docs/VERIFICATION.md`.
 
+## Release scope (v0.1.0)
+
+The supported scope of this release, stated narrowly: the app, upload with content validation, and — once the corpus is imported — verified-reference translation, morphology, and deterministic verification work with zero model provisioning. OCR needs a Tesseract binary; general translation of unfamiliar passages needs a trained local model; historical scripts need a trained Kraken checkpoint with a measured evaluation record. Anything not provisioned reports itself unavailable with the reason. Full statement, artifact readiness table, corpus provenance, and the complete Windows setup sequence: `docs/RELEASE.md`. Security posture: `docs/SECURITY.md`. Offline proofs: `docs/OFFLINE_OPERATION.md`. Acceptance state, criterion by criterion: `docs/ACCEPTANCE_AUDIT.md`. Troubleshooting: `docs/TROUBLESHOOTING.md`.
+
 ## Language profiles
 
 - **Biblical Hebrew → English** — profile defined; corpus retrieval live for Genesis; general model not trained.

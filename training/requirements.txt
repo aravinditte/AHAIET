@@ -11,3 +11,9 @@ sacrebleu>=2.4
 # binary from a Marian/SentencePiece install is an accepted alternative;
 # training/nmt/train_nmt.py uses whichever it finds and says which.
 sentencepiece>=0.2
+# Kraken historical-script OCR/HTR (training/ocr/train_kraken.py and the
+# backend Kraken adapter). Linux/WSL2-first. The backend declares the
+# same dependency as its `kraken` extra; install one or the other:
+#   pip install -r training/requirements.txt
+#   pip install -e "backend[kraken]"
+kraken>=4.3

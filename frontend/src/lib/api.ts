@@ -1,4 +1,4 @@
-import type { Capabilities, LanguageProfile, OcrResult, TranslationResult, UploadMeta } from "@/types/api";
+import type { Capabilities, LanguageProfile, OcrResult, ScriptSupport, TranslationResult, UploadMeta } from "@/types/api";
 const BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://127.0.0.1:8000";
 export class ApiClientError extends Error { code: string; constructor(code: string, message: string) { super(message); this.code = code; } }
 async function parse<T>(res: Response): Promise<T> {
@@ -15,9 +15,10 @@ export const api = {
   async languages(): Promise<LanguageProfile[]> { const d = await parse<{ languages: LanguageProfile[] }>(await fetch(`${BASE}/api/languages`)); return d.languages; },
   async upload(file: File): Promise<UploadMeta> { const fd = new FormData(); fd.append("file", file); return parse(await fetch(`${BASE}/api/uploads`, { method: "POST", body: fd })); },
   uploadUrl(id: string): string { return `${BASE}/api/uploads/${id}`; },
-  async ocr(uploadId: string, languageProfile?: string, preprocessingProfile = "conservative"): Promise<OcrResult> {
-    return parse(await fetch(`${BASE}/api/ocr`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ upload_id: uploadId, language_profile: languageProfile ?? null, preprocessing_profile: preprocessingProfile }) }));
+  async ocr(uploadId: string, languageProfile?: string, preprocessingProfile = "conservative", engine = "auto", scriptProfile = "hebrew_square"): Promise<OcrResult> {
+    return parse(await fetch(`${BASE}/api/ocr`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ upload_id: uploadId, language_profile: languageProfile ?? null, preprocessing_profile: preprocessingProfile, engine, script_profile: scriptProfile }) }));
   },
+  async scripts(): Promise<ScriptSupport[]> { const d = await parse<{ scripts: ScriptSupport[] }>(await fetch(`${BASE}/api/scripts`)); return d.scripts; },
   async translate(text: string, sourceLanguage?: string): Promise<TranslationResult> {
     return parse(await fetch(`${BASE}/api/translate`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, source_language: sourceLanguage ?? null }) }));
   },

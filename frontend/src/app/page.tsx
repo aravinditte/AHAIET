@@ -5,9 +5,10 @@ import { LanguageSelector } from "@/components/LanguageSelector";
 import { ReadinessPanel } from "@/components/ReadinessPanel";
 import { SourceEditor } from "@/components/SourceEditor";
 import { TranslationPanel } from "@/components/TranslationPanel";
+import { ScriptsPanel } from "@/components/ScriptsPanel";
 import { ExportButtons } from "@/components/ExportButtons";
 import { api, ApiClientError } from "@/lib/api";
-import type { LanguageProfile, OcrResult, TranslationResult, UploadMeta } from "@/types/api";
+import type { LanguageProfile, OcrResult, ScriptSupport, TranslationResult, UploadMeta } from "@/types/api";
 
 export default function Home() {
   const [file, setFile] = React.useState<File | null>(null);
@@ -16,6 +17,9 @@ export default function Home() {
   const [languages, setLanguages] = React.useState<LanguageProfile[]>([]);
   const [language, setLanguage] = React.useState("");
   const [preprocessing, setPreprocessing] = React.useState("conservative");
+  const [ocrEngine, setOcrEngine] = React.useState("auto");
+  const [scriptProfile, setScriptProfile] = React.useState("hebrew_square");
+  const [scriptRows, setScriptRows] = React.useState<ScriptSupport[]>([]);
   const [ocrResult, setOcrResult] = React.useState<OcrResult | null>(null);
   const [rawOcr, setRawOcr] = React.useState("");
   const [corrected, setCorrected] = React.useState("");
@@ -25,6 +29,7 @@ export default function Home() {
   const [dark, setDark] = React.useState(false);
 
   React.useEffect(() => { api.languages().then(setLanguages).catch(() => {}); }, []);
+  React.useEffect(() => { api.scripts().then(setScriptRows).catch(() => {}); }, []);
   React.useEffect(() => { document.documentElement.classList.toggle("dark", dark); }, [dark]);
   React.useEffect(() => {
     if (!file) { setLocalPreview(null); return; }
@@ -43,7 +48,7 @@ export default function Home() {
     if (!uploadMeta) { setError("Upload an image first."); return; }
     setError(null); setStatus("Running OCR…");
     try {
-      const r = await api.ocr(uploadMeta.id, language || undefined, preprocessing);
+      const r = await api.ocr(uploadMeta.id, language || undefined, preprocessing, ocrEngine, scriptProfile);
       setOcrResult(r); setRawOcr(r.original_ocr_text); setCorrected(r.original_ocr_text);
       setStatus(`OCR complete (${r.ocr_engine}, profile ${r.ocr_profile}, ${r.word_count} words). Review and correct the text, then translate.`);
     }
@@ -55,7 +60,9 @@ export default function Home() {
     try {
       const r = await api.translate(corrected, language || undefined);
       setTranslationResult(r);
-      setStatus(r.translation_method === "verified_reference"
+      setStatus(r.status === "partial"
+        ? "Partial translation: some lines translated, some unavailable — see the per-line breakdown."
+        : r.translation_method === "verified_reference"
         ? "Verified corpus match found — the cited edition's English is shown with its provenance."
         : "Translation complete.");
     }
@@ -75,6 +82,7 @@ export default function Home() {
         <button type="button" onClick={() => setDark(!dark)} aria-pressed={dark} className="rounded border px-3 py-1">{dark ? "Light" : "Dark"} theme</button>
       </header>
       <ReadinessPanel />
+      <ScriptsPanel />
       <UploadPanel file={file} previewUrl={preview} onFile={onFile} uploadMeta={uploadMeta} />
       <section aria-labelledby="proc-h" className="rounded border p-4">
         <h2 id="proc-h" className="font-semibold">Step 2 — Language &amp; extraction</h2>
@@ -87,11 +95,26 @@ export default function Home() {
           </select>
           <p className="text-sm">The uploaded original is never modified; preprocessing works on a derived copy and reports every step.</p>
         </div>
+        <div className="mt-3">
+          <label htmlFor="ocr-engine" className="font-semibold">OCR engine</label>
+          <select id="ocr-engine" value={ocrEngine} onChange={(e) => setOcrEngine(e.target.value)} className="ml-2 rounded border p-1 dark:bg-neutral-800">
+            <option value="auto">Auto (Tesseract for Hebrew square script)</option>
+            <option value="tesseract">Tesseract</option>
+            <option value="kraken">Kraken (historical scripts, when supported)</option>
+          </select>
+          <label htmlFor="script-profile" className="ml-4 font-semibold">Script</label>
+          <select id="script-profile" value={scriptProfile} onChange={(e) => setScriptProfile(e.target.value)} className="ml-2 rounded border p-1 dark:bg-neutral-800">
+            {scriptRows.length ? scriptRows.map((s) => (
+              <option key={s.id} value={s.id}>{s.name} — {s.status}</option>
+            )) : <option value="hebrew_square">Hebrew square script</option>}
+          </select>
+          <p className="text-sm">Historical scripts are recognised only when the support matrix below computes them as supported (trained checkpoint + measured evaluation record). Unsupported choices fail with an explicit error — the app never silently substitutes another engine.</p>
+        </div>
         <button type="button" onClick={extract} disabled={!uploadMeta} className="mt-3 rounded bg-blue-700 px-4 py-2 text-white disabled:opacity-40">Process / Extract Text (OCR)</button>
       </section>
       <SourceEditor rawOcr={rawOcr} corrected={corrected} onCorrected={setCorrected}
         uncertainSpans={ocrResult?.uncertain_spans ?? []} meanConfidence={ocrResult?.mean_confidence ?? null}
-        ocrNote={ocrResult ? `OCR profile: ${ocrResult.ocr_profile} (${ocrResult.ocr_lang} traineddata). ${ocrResult.ocr_profile_note}` : null} />
+        ocrNote={ocrResult ? `OCR profile: ${ocrResult.ocr_profile}${ocrResult.ocr_lang ? ` (${ocrResult.ocr_lang} traineddata)` : ""}. ${ocrResult.ocr_profile_note}` : null} />
       <section aria-labelledby="trbtn-h" className="rounded border p-4">
         <h2 id="trbtn-h" className="font-semibold">Step 4 — Translate the confirmed transcription</h2>
         <button type="button" onClick={translate} disabled={!corrected.trim()} className="mt-2 rounded bg-blue-700 px-4 py-2 text-white disabled:opacity-40">Translate</button>
@@ -100,7 +123,7 @@ export default function Home() {
       {status && <p role="status" className="rounded border p-2">{status}</p>}
       {error && <p role="alert" className="rounded border border-red-500 p-2">{error}</p>}
       <div className="flex flex-wrap items-center gap-3">
-        <ExportButtons state={{ rawOcrText: rawOcr, correctedSourceText: corrected, englishTranslation: translation, languageProfile: language || null, uploadId: uploadMeta?.id ?? null, translationMethod: translationResult?.translation_method ?? null, sourceReferences: translationResult?.source_references ?? [], engine: translationResult?.engine ?? null, modelVersion: translationResult?.model_version ?? null, artifactSha256: translationResult?.artifact_sha256 ?? null, coverage: translationResult?.coverage ?? null }} />
+        <ExportButtons state={{ rawOcrText: rawOcr, correctedSourceText: corrected, englishTranslation: translation, languageProfile: language || null, uploadId: uploadMeta?.id ?? null, translationMethod: translationResult?.translation_method ?? null, sourceReferences: translationResult?.source_references ?? [], engine: translationResult?.engine ?? null, modelVersion: translationResult?.model_version ?? null, artifactSha256: translationResult?.artifact_sha256 ?? null, coverage: translationResult?.coverage ?? null, verification: translationResult?.verification ?? null, provenance: translationResult?.provenance ?? null }} />
         <button type="button" onClick={reset} className="rounded border px-3 py-1">Clear / reset</button>
       </div>
     </main>

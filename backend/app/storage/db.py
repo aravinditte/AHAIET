@@ -45,6 +45,20 @@ CREATE TABLE IF NOT EXISTS corpus_words (
   morph_code TEXT NOT NULL DEFAULT '', word_language TEXT NOT NULL DEFAULT '');
 CREATE INDEX IF NOT EXISTS idx_words_lookup ON corpus_words(language_profile, surface_nodiac);
 """),
+    # Hybrid verification / passage / performance work: per-stage timing
+    # storage on jobs, and the trained-model translation result cache.
+    # Additive only; earlier migrations are never edited.
+    (3, """
+ALTER TABLE jobs ADD COLUMN stage_timings_json TEXT;
+CREATE TABLE IF NOT EXISTS translation_cache (
+  cache_key TEXT PRIMARY KEY,
+  language_profile TEXT NOT NULL,
+  engine TEXT NOT NULL,
+  artifact_sha256 TEXT,
+  response_json TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')));
+CREATE INDEX IF NOT EXISTS idx_translation_cache_profile ON translation_cache(language_profile, engine);
+"""),
 ]
 PROFILES = [
     ("biblical_hebrew", "Biblical Hebrew", "Hebrew", "profile_defined_models_not_provisioned", "Consonantal and vocalized (niqqud) text; cantillation where present."),

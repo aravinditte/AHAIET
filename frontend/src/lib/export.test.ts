@@ -30,6 +30,19 @@ describe("export formatting", () => {
     expect(txt).toContain("Model version: moses-smt-hebrew-abcd1234");
     expect(txt).toContain("Source-token coverage: 3/4 (75%)");
   });
+  it("includes verification summary and provenance in exports when present", () => {
+    const s = { ...base, englishTranslation: "In the beginning",
+      provenance: { engine: "verified_reference", model_id: null, model_version: null, artifact_sha256: null, evaluation_state: null, dataset_card_sha256: null, retrieval_citation: { passage_id: "p1", reference: "Genesis 1:1", match_type: "exact", source_edition: "WLC", translation_edition: "WEB", license: "Public Domain", provenance: "morphhb" }, cached: false },
+      verification: { overall_status: "warnings" as const, note: "checks flag risks", empirical_uncertainty: { retrieval_match_type: "exact" },
+        checks: [{ name: "negation", status: "pass" as const, detail: "counts match", evidence: {} }] } };
+    const parsed = JSON.parse(buildJsonExport(s));
+    expect(parsed.verification.overall_status).toBe("warnings");
+    expect(parsed.verification.checks[0].name).toBe("negation");
+    expect(parsed.provenance.retrieval_citation.reference).toBe("Genesis 1:1");
+    const txt = buildCombinedTxt(s);
+    expect(txt).toContain("VERIFICATION");
+    expect(txt).toContain("Retrieval citation: Genesis 1:1 (exact)");
+  });
   it("includes verified-reference citation and match fields when present", () => {
     const ref: SourceReference = { passage_id: "morphhb-gen-1-1", reference: "Genesis 1:1", book: "Genesis", language_profile: "biblical_hebrew", match_type: "exact", source_edition: "WLC via morphhb", translation_edition: "World English Bible (WEB)", license: "Public Domain", provenance: "morphhb OSIS Gen.xml", source_text: HEBREW, english_text: "In the beginning" };
     const s = { ...base, englishTranslation: "In the beginning", translationMethod: "verified_reference", sourceReferences: [ref] };

@@ -6,7 +6,7 @@ def suggest_language(text: str, selected: str | None = None) -> dict:
     # INVARIANT: Hebrew script alone never identifies the language.
     # Biblical Aramaic is written in Hebrew characters, so script detection
     # cannot distinguish it from Biblical Hebrew. Without corpus/morphology
-    # evidence (not provisioned in Part 1) we must return 'uncertain'.
+    # evidence (not provisioned in the foundation build) we must return 'uncertain'.
     if selected in SUPPORTED:
         return {"suggestion": selected, "confidence": None, "basis": "user_selection",
                 "warnings": []}

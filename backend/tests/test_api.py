@@ -23,7 +23,13 @@ def test_languages_distinct(client):
 
 def test_models_not_provisioned(client):
     models = client.get("/api/models").json()["models"]
-    assert models and all(m["status"] == "not_provisioned" and m["path"] is None for m in models)
+    assert models
+    translation = [m for m in models if m.get("kind") == "translation"]
+    assert translation and all(m["status"] == "not_provisioned" and m["path"] is None for m in translation)
+    # The OCR entry honestly records that traineddata may be downloaded
+    # while the binary is still missing; it must never claim a model path.
+    ocr = [m for m in models if m.get("kind") == "ocr" and m.get("engine") == "tesseract"]
+    assert ocr and all(m["path"] is None for m in ocr)
 
 def test_valid_png_upload_and_preview(client):
     r = client.post("/api/uploads", files={"file": ("page.png", png_bytes(), "image/png")})

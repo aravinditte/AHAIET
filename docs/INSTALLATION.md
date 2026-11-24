@@ -1,5 +1,5 @@
 # Installation (Windows-first)
-Prerequisites: Windows PowerShell, VS Code, Python 3.11+ (py launcher), Node.js 20+/npm. Optional: Tesseract, WSL2 (Moses training, Part 4), Docker, NVIDIA GPU — none required to start the app.
+Prerequisites: Windows PowerShell, VS Code, Python 3.11+ (py launcher), Node.js 20+/npm. Optional: Tesseract, WSL2 (Moses training, the translation-model work), Docker, NVIDIA GPU — none required to start the app.
 1. .\scripts\setup-windows.ps1  (backend venv + pip install -e ".[dev]", frontend npm install)
 2. .\scripts\verify-installation.ps1  (versions, Tesseract presence, backend pytest)
 3. .\scripts\start-backend.ps1  (uvicorn 127.0.0.1:8000)

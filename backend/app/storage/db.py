@@ -21,6 +21,30 @@ CREATE TABLE IF NOT EXISTS jobs (
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   upload_id TEXT, language_profile TEXT, status TEXT NOT NULL, stage TEXT, error TEXT, result_json TEXT);
 """),
+    # Corpus retrieval work: canonical passage fields + word-level morphology
+    # index. Added as a new migration; the foundation migration above is
+    # never edited.
+    (2, """
+ALTER TABLE reference_passages ADD COLUMN dialect TEXT NOT NULL DEFAULT '';
+ALTER TABLE reference_passages ADD COLUMN script TEXT NOT NULL DEFAULT 'Hebrew';
+ALTER TABLE reference_passages ADD COLUMN period TEXT NOT NULL DEFAULT '';
+ALTER TABLE reference_passages ADD COLUMN book TEXT NOT NULL DEFAULT '';
+ALTER TABLE reference_passages ADD COLUMN reference TEXT NOT NULL DEFAULT '';
+ALTER TABLE reference_passages ADD COLUMN source_edition TEXT NOT NULL DEFAULT '';
+ALTER TABLE reference_passages ADD COLUMN translation_edition TEXT NOT NULL DEFAULT '';
+ALTER TABLE reference_passages ADD COLUMN partition_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE reference_passages ADD COLUMN normalized_source TEXT NOT NULL DEFAULT '';
+ALTER TABLE reference_passages ADD COLUMN normalized_nodiac_source TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_passages_norm ON reference_passages(language_profile, normalized_source);
+CREATE INDEX IF NOT EXISTS idx_passages_nodiac ON reference_passages(language_profile, normalized_nodiac_source);
+CREATE TABLE IF NOT EXISTS corpus_words (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  passage_id TEXT NOT NULL, language_profile TEXT NOT NULL,
+  position INTEGER NOT NULL, surface TEXT NOT NULL, surface_nodiac TEXT NOT NULL DEFAULT '',
+  lemma TEXT NOT NULL DEFAULT '', strongs TEXT NOT NULL DEFAULT '',
+  morph_code TEXT NOT NULL DEFAULT '', word_language TEXT NOT NULL DEFAULT '');
+CREATE INDEX IF NOT EXISTS idx_words_lookup ON corpus_words(language_profile, surface_nodiac);
+"""),
 ]
 PROFILES = [
     ("biblical_hebrew", "Biblical Hebrew", "Hebrew", "profile_defined_models_not_provisioned", "Consonantal and vocalized (niqqud) text; cantillation where present."),

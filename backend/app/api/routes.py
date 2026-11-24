@@ -4,12 +4,14 @@ from pathlib import Path
 from fastapi import APIRouter, Request, UploadFile, File
 from fastapi.responses import FileResponse, JSONResponse
 from app.core.config import settings as default_settings, Settings
-from app.core.errors import AppError, ValidationAppError
-from app.schemas.models import TranslateRequest, OcrRequest, ProcessRequest, TranslationResponse
+from app.core.errors import AppError, UnavailableError, ValidationAppError
+from app.schemas.models import (TranslateRequest, OcrRequest, ProcessRequest,
+                                MorphologyRequest, RetrievalRequest, TranslationResponse)
 from app.services.preprocessing.service import validate_and_decode
 from app.services.ocr.service import ocr_status, run_ocr
 from app.services.translation.service import translate as do_translate, load_models_manifest
 from app.services.language.service import suggest_language, SUPPORTED, FUTURE
+from app.services import retrieval, morphology
 from app.storage import db as store
 
 router = APIRouter(prefix="/api")
@@ -41,16 +43,22 @@ def capabilities(request: Request):
     except Exception:
         opencv = False
     models = load_models_manifest(s).get("models", [])
-    any_translation = any(m.get("status") == "provisioned" for m in models)
+    any_translation = any(m.get("status") == "provisioned" and m.get("kind") == "translation" for m in models)
+    corpus = retrieval.status(s.db_path)
     return {
         "db_ok": store.db_ok(s.db_path),
         "upload": {"status": "available", "max_bytes": s.upload_max_bytes, "max_pixels": s.upload_max_pixels,
                    "formats": ["PNG", "JPEG", "TIFF", "WEBP", "BMP"]},
         "preprocessing": {"status": "available", "pillow": True, "opencv": opencv,
-                          "note": None if opencv else "OpenCV not installed; Pillow preprocessing is used."},
+                          "profiles": ["conservative", "enhanced"],
+                          "note": None if opencv else "OpenCV not installed; the Pillow/NumPy pipeline is used."},
         "ocr": ocr,
-        "translation": {"status": "available" if any_translation else "unavailable",
-                        "reason": None if any_translation else "No translation model artifact is provisioned (see artifacts/manifests/models.json)."},
+        "corpus": corpus,
+        "morphology": morphology.status(s.db_path),
+        "translation": {"status": "available" if (any_translation or corpus["status"] == "available") else "unavailable",
+                        "verified_reference": corpus["status"] == "available",
+                        "reason": None if (any_translation or corpus["status"] == "available") else
+                        "No corpus imported and no translation model artifact is provisioned (see artifacts/manifests/models.json)."},
         "languages": SUPPORTED,
     }
 
@@ -92,9 +100,16 @@ def ocr(request: Request, body: OcrRequest):
     s = _settings(request)
     path = _find_upload(s, body.upload_id)
     start = time.time()
-    text = run_ocr(path, s, body.language_profile)
-    return {"request_id": uuid.uuid4().hex, "status": "completed", "original_ocr_text": text,
-            "language": suggest_language(text, body.language_profile),
+    result = run_ocr(path, s, body.language_profile, body.preprocessing_profile, body.psm)
+    return {"request_id": uuid.uuid4().hex, "status": "completed",
+            "original_ocr_text": result["original_ocr_text"],
+            "uncertain_spans": result["uncertain_spans"],
+            "mean_confidence": result["mean_confidence"],
+            "word_count": result["word_count"],
+            "ocr_engine": result["ocr_engine"], "ocr_lang": result["ocr_lang"],
+            "ocr_profile": result["ocr_profile"], "ocr_profile_note": result["ocr_profile_note"],
+            "psm": result["psm"], "preprocessing": result["preprocessing"],
+            "language": suggest_language(result["original_ocr_text"], body.language_profile),
             "processing_time_ms": int((time.time() - start) * 1000)}
 
 @router.post("/translate")
@@ -104,16 +119,48 @@ def translate(request: Request, body: TranslateRequest):
     if not text.strip():
         raise ValidationAppError("empty_text", "Source text is empty; there is nothing to translate.")
     start = time.time()
-    result = do_translate(text, s, body.source_language)
+    warnings: list[str] = []
+    try:
+        result = do_translate(text, s, body.source_language)
+    except UnavailableError as e:
+        variant = getattr(e, "variant_candidate", None)
+        if variant is not None:
+            body_out = {"error": {"code": e.code, "message": e.message, "detail": e.detail},
+                        "variant_candidate": variant}
+            return JSONResponse(status_code=e.status_code, content=body_out)
+        raise
     sug = suggest_language(text, body.source_language)
+    warnings.extend(sug["warnings"])
+    if result.get("variant_candidate"):
+        warnings.append(result["variant_candidate"]["warning"])
     resp = TranslationResponse(
         request_id=uuid.uuid4().hex, status="completed",
-        detected_language=sug["suggestion"], selected_language=body.source_language, script="Hebrew",
+        detected_language=result.get("matched_language") or sug["suggestion"],
+        selected_language=body.source_language, script="Hebrew",
         original_ocr_text=body.text, corrected_source_text=text,
         english_translation=result["english_translation"], translation_method=result["translation_method"],
-        warnings=sug["warnings"], model_versions={"translation": result["model"].get("id")},
+        source_references=result.get("source_references", []),
+        warnings=warnings, model_versions={"translation": result["model"].get("id")},
         processing_time_ms=int((time.time() - start) * 1000))
     return resp.model_dump()
+
+@router.post("/retrieval")
+def retrieval_lookup(request: Request, body: RetrievalRequest):
+    s = _settings(request)
+    if body.language not in SUPPORTED:
+        raise ValidationAppError("unsupported_language",
+                                 f"Retrieval is available only for {', '.join(SUPPORTED)}.",
+                                 "Pass language=biblical_hebrew or language=biblical_aramaic.")
+    if not body.text.strip():
+        raise ValidationAppError("empty_text", "Source text is empty; there is nothing to look up.")
+    return retrieval.lookup(s.db_path, body.text, body.language)
+
+@router.post("/morphology")
+def morphology_analysis(request: Request, body: MorphologyRequest):
+    s = _settings(request)
+    if not body.text.strip():
+        raise ValidationAppError("empty_text", "Text is empty; there is nothing to analyse.")
+    return morphology.analyze(s.db_path, body.text, body.language)
 
 @router.post("/process")
 def process(request: Request, body: ProcessRequest):
@@ -126,12 +173,12 @@ def process(request: Request, body: ProcessRequest):
                      (job_id, body.upload_id, body.language_profile, "running", "ocr"))
         conn.commit()
         try:
-            text = run_ocr(path, s, body.language_profile)
-            status, stage, error, result = "awaiting_translation", "ocr_complete", None, {"original_ocr_text": text}
+            result = run_ocr(path, s, body.language_profile, body.preprocessing_profile, body.psm)
+            status, stage, error = "awaiting_translation", "ocr_complete", None
         except AppError as e:
             status, stage, error, result = "failed", "ocr", f"{e.code}: {e.message} {e.detail or ''}".strip(), None
         conn.execute("UPDATE jobs SET status=?,stage=?,error=?,result_json=?,updated_at=datetime('now') WHERE id=?",
-                     (status, stage, error, json.dumps(result) if result else None, job_id))
+                     (status, stage, error, json.dumps(result, ensure_ascii=False) if result else None, job_id))
         conn.execute("INSERT INTO history(upload_id,language_profile,status,detail) VALUES (?,?,?,?)",
                      (body.upload_id, body.language_profile, status, error))
         conn.commit()

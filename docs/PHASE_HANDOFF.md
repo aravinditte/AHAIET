@@ -1,19 +1,37 @@
-# Phase Handoff — Part 1/5
-- Repository path and branch/commit (if available): ~/workspace/ahaiet (local build of GitHub repo aravinditte/AHAIET). Pushed 2026-11-24 to branch `ahaiet-part1` (snapshot commit f9a99bfc3d9be06c719ac059a16378f40062f76d); all 87 files verified byte-identical by git blob SHA (87 OK, 0 mismatch); PR #1 opened into main: https://github.com/aravinditte/AHAIET/pull/1 — awaiting Wizz's merge. Original repo README title/description preserved and expanded in README.md.
-- Last verified phase and scope: Part 1 — Foundation: monorepo, contracts, frontend, backend. Verified 2026-11-24 on this VM.
-- Implemented and changed paths: backend/ (app/api/routes.py, app/core/{config,errors}.py, app/schemas/models.py, app/services/{preprocessing,ocr,language,morphology,retrieval,translation,verification}, app/storage/db.py, app/main.py, pyproject.toml, tests/{conftest,test_api}.py); frontend/ (package.json, next/tsconfig/postcss/vitest configs, src/app/{layout,page,globals.css}, src/components/{UploadPanel,LanguageSelector,ReadinessPanel,SourceEditor,TranslationPanel,ExportButtons}.tsx, src/lib/{api,export,export.test}.ts, src/types/api.ts); training/*/README.md; scripts/*.ps1 (5); artifacts/manifests/{datasets,models}.json + artifacts/{models,corpora,benchmarks}/.gitkeep; docs/ (11 files); README.md, LICENSE (MIT, Aravind Itte), .gitignore, .env.example; BUILD_EVIDENCE.txt.
-- Current app/API/schema contracts: see docs/API.md and docs/PROJECT_CONTRACT.md. DB schema v1 via MIGRATIONS in backend/app/storage/db.py: schema_version, language_profiles (2 rows seeded), model_metadata, reference_passages (EMPTY), history, jobs. Errors always {error:{code,message,detail}}. TranslationResponse field set is fixed in backend/app/schemas/models.py.
-- OCR model readiness by script/profile (artifact path + version): NONE. Tesseract: binary not installed on build machine (which tesseract -> not found), adapter real (shutil.which + subprocess, -l heb). Kraken: package not installed, no model. All profiles: unavailable.
-- Translation model readiness by language (artifact path + version): NONE for biblical_hebrew and biblical_aramaic. models.json: 4 translation entries (moses/marian x 2 profiles) all status=not_provisioned, path=null, version=null, checksum=null.
-- Dataset sources, usage rights, partitions, provenance and manifests: NONE. artifacts/manifests/datasets.json = {"datasets": []}. No corpus was downloaded, licensed, or invented; reference_passages is empty.
-- Actual commands run and their outcomes: pip install -e ".[dev]" OK; pytest -> 15 passed; npm install OK; npm run typecheck -> exit 0; vitest -> 2 passed; npm run build -> success (/ 4.35 kB, 107 kB First Load); live uvicorn smoke -> health ok, capabilities honest, upload 200, translate 503. Full log summary: BUILD_EVIDENCE.txt.
-- Evidence of genuine image/OCR/translation processing, if available: Genuine image processing only: Pillow content-validated a real PNG upload in tests and live smoke, stored it by sha256, and served byte-identical preview bytes. OCR processing: none (no engine). Translation processing: none (no model). Nothing else is claimed.
-- Failures, unsupported features, unresolved risks: OCR unavailable (no Tesseract/Kraken); translation unavailable (no artifacts); OpenCV not installed (optional; Pillow path used); future language profiles unsupported; morphology/retrieval/verification are interfaces only; retention-days is config only (no sweeper); Starlette TestClient deprecation warning (cosmetic). Initial pytest collection error from tests/__init__.py was fixed (file removed).
-- Do-not-change architecture and migration notes: keep raw OCR / corrected / normalized text separate; never classify Aramaic as Hebrew from script; API contracts backwards-compatible; schema changes only as new MIGRATIONS entries; model binaries/corpora outside source control with checksummed manifests; no faked readiness, scores, or corpus entries (docs/PROJECT_CONTRACT.md).
-- Exact Windows commands to install, test and start:
-  .\scripts\setup-windows.ps1
-  .\scripts\verify-installation.ps1
-  .\scripts\start-backend.ps1   (terminal 1)
-  .\scripts\start-frontend.ps1  (terminal 2)
-  Manual: cd backend; py -3.11 -m venv .venv; .\.venv\Scripts\Activate.ps1; pip install -e ".[dev]"; python -m pytest -q; python -m uvicorn app.main:app --host 127.0.0.1 --port 8000  |  cd frontend; npm install; npm run typecheck; npm run build; npm run dev
-- First tasks for Part 2: (1) Install Tesseract + heb traineddata (docs/OCR.md) and re-check /api/capabilities until ocr.status=available. (2) Add a real scanned/photographed Hebrew page fixture set with known ground truth (licence-recorded) and measure CER/WER — no scores before measurement. (3) Wire OpenCV preprocessing behind the existing preprocessing service and compare against the Pillow baseline. (4) Evaluate Kraken install + a historical-script model path; keep adapter honest until a model file exists. (5) Extend /api/process to persist OCR results into jobs.result_json/history once OCR genuinely runs.
+# Handoff — AHAIET (organised by work area)
+
+- **Repository:** ~/workspace/ahaiet (GitHub: aravinditte/AHAIET). The foundation build sits on an earlier branch that the owner is retiring unmerged; the current tree (foundation + OCR/corpus work) is the source of truth and is to be pushed on a work-named branch.
+- **Naming rule (owner, hard):** never write stage/sequence numbering anywhere — files, docs, comments, manifests, tests, commit messages. Name work only ("foundation", "OCR and corpus retrieval", …).
+- **Testing rule (owner):** the build assistant codes every case; the developer runs the tests. docs/VERIFICATION.md carries the commands and expected behaviour for every case, marked as not-yet-run where applicable.
+
+## Foundation (done, test-run at build time)
+Monorepo (frontend/backend/training/scripts/artifacts/docs), FastAPI + SQLite migrations, content-validated upload + preview, all base endpoints, Next.js UI with RTL raw/corrected source separation, copy/export, PowerShell setup/start scripts. Recorded results are in docs/VERIFICATION.md (historical section).
+
+## OCR and corpus retrieval (coded; developer runs the tests)
+- **Preprocessing:** backend/app/services/preprocessing/service.py — conservative/enhanced profiles, EXIF/grayscale/adaptive contrast/bounded deskew/guarded median/upscale, step report, original preserved.
+- **OCR:** services/ocr — Tesseract TSV adapter (word confidences -> uncertain_spans, mean_confidence, reading order), profile recorded per result, heb traineddata for both Hebrew-script profiles, Syriac never substituted, empty result -> 422 empty_transcription, missing engine -> 503. Kraken stays an honest check.
+- **Corpus:** backend/app/corpus/import_morphhb.py — morphhb/WLC Genesis + Daniel parsed (1,890 verses), WEB aligned (1,885), language by documented Daniel range + morphhb H/A word flags, book-block partitions, dedup/validation, canonical JSONL + SQLite import (schema migration v2 adds passage fields + corpus_words). Data files gitignored; provenance + sha256 in artifacts/manifests/datasets.json. Six-passage committed fixture under training/datasets/fixtures/.
+- **Retrieval:** services/retrieval — per-profile exact (diacritic-sensitive normalized key) and normalized (diacritic-insensitive) matching; high-overlap non-matches surface only as variant candidates with warnings, never as translations. Cross-profile search does not happen.
+- **Translation:** /api/translate resolves verified corpus match -> cited WEB English (translation_method="verified_reference") -> provisioned model -> honest 503 distinguishing no-match vs no-corpus.
+- **Morphology:** services/morphology + POST /api/morphology — separate Hebrew/Aramaic adapters over corpus_words filtered by profile AND word-level language; found/not_found per word; 503 corpus_unavailable when unimported.
+- **Evaluation tooling:** backend/app/evaluation/metrics.py (Levenshtein CER/WER), training/ocr/generate_fixtures.py (renders Genesis 1:1 + Daniel 2:4 from real corpus text; ground_truth.json committed), training/evaluation/evaluate_ocr.py (writes ocr_measurement.json when run with a provisioned binary). No scores exist yet — none were measured.
+- **Frontend:** preprocessing profile selector; OCR result state (uncertain-span highlighting, mean confidence, profile note); translation panel shows method + citation/provenance + warnings; JSON/TXT export includes translation_method and source_references.
+
+## Contracts that must stay stable
+- API responses stay backwards-compatible; new fields are additive. Errors remain {error:{code,message,detail}}.
+- Raw OCR, corrected text, and normalized search keys remain separate representations; normalization lives in services/language/normalize.py.
+- Biblical Aramaic in Hebrew script is never classified as Hebrew from script alone; language suggestion still returns "uncertain" without user selection or corpus evidence.
+- Schema changes only as new MIGRATIONS entries in backend/app/storage/db.py (v1 foundation, v2 corpus fields + corpus_words).
+- Corpora and model binaries stay outside source control; manifests carry checksums + provenance.
+- A reference translation is returned only for a verified, identified corpus match; no gloss or paraphrase is ever substituted.
+
+## Blockers
+- Tesseract binary not provisioned on the build machine (stale apt lists; exact errors recorded in docs/BUILD_STATE.md and artifacts/manifests/models.json). heb/eng traineddata are downloaded. OCR-run tests skip with a reason until the binary exists; the measurement script then produces the first real CER/WER.
+
+## Exact commands for the developer
+See docs/VERIFICATION.md (setup, full test suites, per-case expected behaviour, OCR measurement, corpus import) and the README quickstart.
+
+## Next work (when the owner sends it)
+- Run the developer test pass and the OCR measurement; record real CER/WER and failure examples in docs/BUILD_STATE.md.
+- General translation models (Moses SMT baseline and Marian NMT, evaluated per profile) for text with no corpus match.
+- Kraken historical-script model evaluation if a suitable model is obtained.

@@ -1,6 +1,2 @@
-# training/datasets
-
-Part 1 placeholder. Nothing in this directory has been trained, downloaded, or provisioned yet.
-Any dataset or model produced here in a later part must be recorded, with provenance, licence,
-checksums and partitions, in artifacts/manifests/datasets.json / models.json before it may be
-reported as available. See docs/TRAINING.md and docs/DATASETS.md.
+# Datasets
+The corpus importer lives in the backend (backend/app/corpus/import_morphhb.py) so the running app and the tooling share one parser. fixtures/sample_passages.jsonl is the small committed test fixture: six real morphhb/WLC passages with WEB alignment and full provenance, exported by the importer from the downloaded corpus. Full corpus data lives outside source control (artifacts/corpora/); see docs/DATASETS.md and artifacts/manifests/datasets.json.

@@ -1,0 +1,38 @@
+AHAIET Part 1 - BUILD EVIDENCE (commands actually run on this VM, 2026-11-24)
+Environment: Python 3.12.3, Node v24.22.1, npm 10.9.4, git 2.43.0, CPU only.
+
+1) which tesseract
+   -> (no output) exit 1 : Tesseract NOT installed. OCR unavailable is the honest state.
+
+2) cd backend && python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
+   -> Successfully installed ahaiet-backend-0.1.0 fastapi-0.165.0 uvicorn-0.54.0 pydantic-2.14.4
+      pillow-13.0.0 numpy-2.5.5 python-multipart-0.0.34 pytest-9.2.0 httpx-0.28.1 (et al.)
+
+3) cd backend && .venv/bin/python -m pytest -q
+   -> First run: collection ERROR (tests/__init__.py made tests a package, conftest import failed).
+      Fixed by removing tests/__init__.py.
+   -> Final: 15 passed, 1 warning in 0.42s
+      (warning: StarletteDeprecationWarning about httpx/TestClient - cosmetic)
+
+4) cd frontend && npm install
+   -> completed OK
+
+5) cd frontend && npm run typecheck   (tsc --noEmit)
+   -> exit 0, no errors
+
+6) cd frontend && npx vitest run
+   -> Test Files 1 passed (1); Tests 2 passed (2)  [src/lib/export.test.ts, incl. Hebrew Unicode round-trip]
+
+7) cd frontend && npm run build
+   -> PASS. Route / : 4.35 kB, First Load JS 107 kB; /_not-found 994 B; static prerender OK.
+
+8) Live backend smoke (uvicorn app.main:app --host 127.0.0.1 --port 8765, then stopped):
+   GET  /api/health       -> {"status":"ok","service":"ahaiet-backend","version":"0.1.0","db_ok":true}
+   GET  /api/capabilities -> db_ok true; upload available; opencv false; ocr.status "unavailable"
+                             (tesseract available:false, kraken available:false); translation "unavailable"
+   POST /api/uploads (real Pillow-generated 8x8 PNG) -> 200 {"format":"PNG","width":8,"height":8,"size_bytes":69,"sha256":"4a09..."}
+   POST /api/translate    -> 503 {"error":{"code":"translation_model_unavailable", ...}} (honest, no fabricated output)
+
+NOT RUN / NOT VERIFIED: Tesseract OCR on a real page (binary absent), Kraken, Moses, Marian,
+OpenCV paths, Windows PowerShell scripts (written for Windows; not executable on this Linux VM),
+Docker/WSL2/GPU paths. No benchmark or accuracy numbers exist.

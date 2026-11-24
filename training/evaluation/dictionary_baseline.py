@@ -68,9 +68,16 @@ def build_lexicon(passages: list[dict], language_profile: str) -> dict[str, str]
     return {key: counter.most_common(1)[0][0] for key, counter in counts.items()}
 
 
-def load_lexicon_from_corpus(corpus_path: Path, language_profile: str) -> dict[str, str]:
+def load_lexicon_from_corpus(corpus_path: Path, language_profile: str,
+                             partitions: set[str] | None = None) -> dict[str, str]:
+    """Build the lexicon from corpus rows. When `partitions` is given,
+    only rows in those partitions contribute — the evaluation harness
+    passes {"train"} so held-out test vocabulary can never leak into
+    the baseline (AHAIET-004)."""
     passages = [json.loads(line) for line in Path(corpus_path).read_text(encoding="utf-8").splitlines()
                 if line.strip()]
+    if partitions is not None:
+        passages = [p for p in passages if p.get("partition") in partitions]
     return build_lexicon(passages, language_profile)
 
 

@@ -20,6 +20,7 @@ never substituted for Hebrew-script Aramaic.
 from __future__ import annotations
 import contextlib
 import tempfile
+import threading
 from pathlib import Path
 from app.core.config import Settings
 from app.core.errors import AppError, UnavailableError, ValidationAppError
@@ -35,14 +36,24 @@ ENGINES = ("auto", "tesseract", "kraken")
 
 
 def ocr_status(settings: Settings) -> dict:
-    tess = tesseract_adapter.is_available(settings.tesseract_cmd)
-    data_ok = tesseract_adapter.traineddata_available(settings.tesseract_lang, settings.tessdata_prefix)
-    tesseract_ready = bool(tess and data_ok)
+    # AHAIET-034: readiness comes from the binary's own --list-langs
+    # report (bounded, TTL-cached), reported as three distinct facts.
+    probe = tesseract_adapter.readiness(settings.tesseract_cmd, settings.tesseract_lang,
+                                        settings.tessdata_prefix,
+                                        ttl_s=settings.tesseract_probe_ttl_s)
+    tess = probe["binary_available"]
+    data_ok = probe["language_data_available"]
+    tesseract_ready = probe["usable"]
     kraken = kraken_adapter.status(settings)
     matrix = script_profiles.support_matrix(settings, tesseract_ready)
     any_supported = any(row["status"] == "supported" for row in matrix)
     return {
-        "tesseract": {"available": tess, "path": tesseract_adapter.tesseract_path(settings.tesseract_cmd),
+        "tesseract": {"available": tess,
+                      "binary_available": probe["binary_available"],
+                      "language_data_available": probe["language_data_available"],
+                      "usable": probe["usable"],
+                      "languages": probe["languages"],
+                      "path": tesseract_adapter.tesseract_path(settings.tesseract_cmd),
                       "traineddata": {"lang": settings.tesseract_lang, "available": data_ok,
                                       "prefix": str(settings.tessdata_prefix) if settings.tessdata_prefix else None},
                       "reason": None if tess else "tesseract binary not found (AHAIET_TESSERACT_CMD / PATH)"},
@@ -70,9 +81,9 @@ def _scratch_file(settings: Settings):
         yield tmp
 
 def _tesseract_ready(settings: Settings) -> bool:
-    return bool(tesseract_adapter.is_available(settings.tesseract_cmd)
-                and tesseract_adapter.traineddata_available(settings.tesseract_lang,
-                                                            settings.tessdata_prefix))
+    return bool(tesseract_adapter.readiness(settings.tesseract_cmd, settings.tesseract_lang,
+                                            settings.tessdata_prefix,
+                                            ttl_s=settings.tesseract_probe_ttl_s)["usable"])
 
 
 def _shape_result(text: str, words: list[dict], mean_confidence, engine: str,
@@ -111,7 +122,8 @@ def _run_tesseract(image_path: Path, settings: Settings, language_profile: str |
         with timer.stage("ocr"):
             result = tesseract_adapter.run_tesseract_tsv(
                 tmp_path, settings.tesseract_cmd, lang,
-                psm if psm is not None else settings.ocr_psm, settings.tessdata_prefix)
+                psm if psm is not None else settings.ocr_psm, settings.tessdata_prefix,
+                timeout_s=settings.ocr_timeout_s)
     finally:
         tmp_path.unlink(missing_ok=True)
     note = ("Biblical Aramaic in Hebrew script is recognised with the Hebrew "
@@ -160,12 +172,38 @@ def _run_kraken(image_path: Path, settings: Settings, language_profile: str | No
     return out
 
 
+# Global OCR concurrency bound (AHAIET-033): one semaphore per
+# configured limit value, shared by every OCR request in the process.
+_ocr_semaphores: dict[int, threading.BoundedSemaphore] = {}
+_ocr_semaphores_lock = threading.Lock()
+
+
+def _ocr_semaphore(settings: Settings) -> threading.BoundedSemaphore:
+    limit = max(1, settings.max_concurrent_ocr)
+    with _ocr_semaphores_lock:
+        sem = _ocr_semaphores.get(limit)
+        if sem is None:
+            sem = threading.BoundedSemaphore(limit)
+            _ocr_semaphores[limit] = sem
+        return sem
+
+
 def run_ocr(image_path: Path, settings: Settings, language_profile: str | None = None,
             preprocessing_profile: str = "conservative", psm: int | None = None,
             engine: str = "auto", script_profile: str = "hebrew_square") -> dict:
     """Full OCR path: stored original -> preprocessing (derived copy) ->
     engine -> text + uncertainty spans. The original file on disk is
-    never modified."""
+    never modified. Concurrent OCR work is bounded globally
+    (AHAIET-033); when the bound is saturated the request waits for a
+    slot rather than spawning unbounded engine processes."""
+    with _ocr_semaphore(settings):
+        return _run_ocr_bounded(image_path, settings, language_profile,
+                                preprocessing_profile, psm, engine, script_profile)
+
+
+def _run_ocr_bounded(image_path: Path, settings: Settings, language_profile: str | None = None,
+                     preprocessing_profile: str = "conservative", psm: int | None = None,
+                     engine: str = "auto", script_profile: str = "hebrew_square") -> dict:
     if engine not in ENGINES:
         raise ValidationAppError("unknown_ocr_engine",
                                  f"Unknown OCR engine '{engine}'.",
@@ -193,10 +231,17 @@ def run_ocr(image_path: Path, settings: Settings, language_profile: str | None =
                        "Try the 'enhanced' preprocessing profile, a higher-resolution image, or check the image actually contains text in the selected script.")
     threshold = settings.ocr_confidence_threshold
     words = result.pop("_words")
+    # AHAIET-028/040: every span carries its token occurrence identity
+    # (global word index in TSV order, block/par/line ids, and a
+    # composite occurrence_id) so the UI highlights the exact
+    # occurrence, never the first identical string.
     result["uncertain_spans"] = [
-        {"text": w["text"], "conf": w["conf"], "line": w["line"],
+        {"text": w["text"], "conf": w["conf"],
+         "index": i, "occurrence_id": f"w{i}",
+         "block": w.get("block"), "par": w.get("par"),
+         "line": w["line"], "line_id": f"b{w.get('block', 0)}p{w.get('par', 0)}l{w['line']}",
          "left": w["left"], "top": w["top"], "width": w["width"], "height": w["height"]}
-        for w in words if 0 <= w["conf"] < threshold
+        for i, w in enumerate(words) if w.get("conf") is not None and 0 <= w["conf"] < threshold
     ]
     result["word_count"] = len(words)
     result["script_profile"] = script_profile

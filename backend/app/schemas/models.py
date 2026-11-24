@@ -1,34 +1,50 @@
 from __future__ import annotations
+from typing import Literal
 from pydantic import BaseModel, Field
 
+# Bounded, enum-typed request schemas (AHAIET-042). Text ceilings align
+# with the passage limits in app.core.config (max_passage_chars default
+# 20000, plus headroom for the corrected/original pair); upload ids are
+# sha256 hex produced by the upload route.
+LanguageProfile = Literal["biblical_hebrew", "biblical_aramaic"]
+PreprocessingProfile = Literal["conservative", "enhanced"]
+OcrEngine = Literal["auto", "tesseract", "kraken"]
+MAX_TEXT_CHARS = 40000
+UPLOAD_ID_PATTERN = r"^[0-9a-f]{64}$"
+
 class TranslateRequest(BaseModel):
-    text: str = Field(default="")
-    source_language: str | None = None
-    corrected_source_text: str | None = None
+    text: str = Field(default="", max_length=MAX_TEXT_CHARS)
+    # AHAIET-026: the raw OCR text (immutable) and the user's corrected
+    # text are separate fields. `text` remains as a backwards-compatible
+    # alias of the corrected/input text for non-OCR callers.
+    original_ocr_text: str | None = Field(default=None, max_length=MAX_TEXT_CHARS)
+    ocr_request_id: str | None = Field(default=None, max_length=128)
+    source_language: LanguageProfile | None = None
+    corrected_source_text: str | None = Field(default=None, max_length=MAX_TEXT_CHARS)
 class OcrRequest(BaseModel):
-    upload_id: str
-    language_profile: str | None = None
-    preprocessing_profile: str = "conservative"
-    psm: int | None = None
+    upload_id: str = Field(pattern=UPLOAD_ID_PATTERN)
+    language_profile: LanguageProfile | None = None
+    preprocessing_profile: PreprocessingProfile = "conservative"
+    psm: int | None = Field(default=None, ge=0, le=13)
     # OCR engine routing: "auto" (Tesseract for the square Hebrew script
     # profile), "tesseract", or "kraken". The script profile selects the
     # writing system; historical profiles are served only by Kraken with
     # a verified checkpoint (see the script support matrix).
-    engine: str = "auto"
-    script_profile: str = "hebrew_square"
+    engine: OcrEngine = "auto"
+    script_profile: str = Field(default="hebrew_square", max_length=64)
 class ProcessRequest(BaseModel):
-    upload_id: str
-    language_profile: str | None = None
-    preprocessing_profile: str = "conservative"
-    psm: int | None = None
-    engine: str = "auto"
-    script_profile: str = "hebrew_square"
+    upload_id: str = Field(pattern=UPLOAD_ID_PATTERN)
+    language_profile: LanguageProfile | None = None
+    preprocessing_profile: PreprocessingProfile = "conservative"
+    psm: int | None = Field(default=None, ge=0, le=13)
+    engine: OcrEngine = "auto"
+    script_profile: str = Field(default="hebrew_square", max_length=64)
 class MorphologyRequest(BaseModel):
-    text: str = Field(default="")
-    language: str
+    text: str = Field(default="", max_length=MAX_TEXT_CHARS)
+    language: LanguageProfile
 class RetrievalRequest(BaseModel):
-    text: str = Field(default="")
-    language: str
+    text: str = Field(default="", max_length=MAX_TEXT_CHARS)
+    language: LanguageProfile
 class VerificationCheck(BaseModel):
     """One deterministic verification check. Status is one of
     pass | warn | fail | not_applicable. A check flags risk; no check
@@ -108,3 +124,12 @@ class TranslationResponse(BaseModel):
     unevaluated_model: bool = False
     cached: bool = False
     stage_timings_ms: dict = Field(default_factory=dict)
+    # Additive remediation fields: text_match says the source text
+    # matched a stored passage key; passage_identity_verified says the
+    # match identifies ONE passage unambiguously. Ambiguous lookups
+    # return candidates (with reason ambiguous_match) and no verified
+    # translation. profile_evidence records what selected the profile.
+    text_match: bool = False
+    passage_identity_verified: bool = False
+    candidates: list = Field(default_factory=list)
+    profile_evidence: dict | None = None

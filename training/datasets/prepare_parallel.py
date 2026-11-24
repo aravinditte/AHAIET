@@ -20,14 +20,14 @@ Output (default training/datasets/prepared/<profile>/):
 
 Split strategy: the importer's recorded group strategy is reused, not
 reinvented — the corpus rows already carry a `partition` assigned by
-book/chapter blocks (Genesis chapters 1-25 train, 26-50 validation,
-Daniel held out as test; see artifacts/manifests/datasets.json). This
-script verifies that no (book, chapter) group spans two splits, then
-writes the splits per language profile, separately. A consequence of
-the recorded strategy is stated plainly in the report: every Aramaic
-passage sits in the Daniel test partition, so the Aramaic profile has
-no training or validation rows until the strategy is deliberately
-revised or more Aramaic books are imported.
+book blocks (Genesis chapters 1-25 train, 26-50 validation; Ezra train
+for both languages; Daniel Hebrew validation; Daniel Aramaic held out
+as test; see artifacts/manifests/datasets.json). This script verifies
+that no (book, chapter) group spans two splits, then writes the
+splits per language profile, separately. Biblical Aramaic training
+material comes from Ezra's documented Aramaic ranges (an independent
+book); Daniel's Aramaic verses remain the held-out test set and never
+appear in training (AHAIET-008).
 
 Leakage rules:
 - an exact duplicate (normalized source key) appearing in two splits

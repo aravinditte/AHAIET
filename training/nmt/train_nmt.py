@@ -155,18 +155,63 @@ def render_config(profile: str, variant: str, work: Path, prof_dir: Path,
     return config_path
 
 
+def _select_checkpoint(model_dir: Path) -> tuple[Path, str]:
+    """Explicit best-checkpoint selection (AHAIET-051). Lexical-last
+    iteration order is never used. Evidence order:
+    1. model.npz.best — the best-checkpoint file/symlink Marian writes
+       when validation-based selection is enabled; its target (or the
+       file itself) is the selection.
+    2. model.npz — Marian's own final/best export name.
+    3. The validation history: parse train.log / *.log in the model
+       dir for the iteration with the lowest recorded validation
+       perplexity/ce-mean and select model.iter<that>.npz.
+    No explicit evidence -> StepError; the export fails rather than
+    guessing."""
+    import re as _re
+    best = model_dir / "model.npz.best"
+    if best.exists():
+        if best.is_symlink():
+            target = best.resolve()
+            if target.exists():
+                return target, f"model.npz.best -> {target.name}"
+        elif best.is_file():
+            return best, "model.npz.best file (Marian best-checkpoint copy)"
+    final = model_dir / "model.npz"
+    if final.exists():
+        return final, "model.npz (Marian final/best export)"
+    logs = list(model_dir.glob("*.log")) + list(model_dir.glob("train.log"))
+    best_iter, best_value = None, None
+    pattern = _re.compile(r"iter[^0-9]{0,12}(\d+)[^\n]*?(?:ce-mean-words|perplexity|valid[^\n]*?)\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)", _re.I)
+    for log_path in logs:
+        try:
+            text = log_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for m in pattern.finditer(text):
+            iteration, value = int(m.group(1)), float(m.group(2))
+            if best_value is None or value < best_value:
+                best_iter, best_value = iteration, value
+    if best_iter is not None:
+        for candidate in model_dir.glob(f"model.iter{best_iter}.npz"):
+            return candidate, f"validation log best iteration {best_iter} (value {best_value})"
+        for candidate in model_dir.glob("model.iter*.npz"):
+            digits = _re.search(r"iter(\d+)", candidate.name)
+            if digits and int(digits.group(1)) == best_iter:
+                return candidate, f"validation log best iteration {best_iter} (value {best_value})"
+    raise StepError(
+        f"no explicit best-checkpoint evidence under {model_dir}: no model.npz.best, "
+        "no model.npz, and no parseable validation history naming a best iteration. "
+        "Refusing to select a checkpoint by lexical order (AHAIET-051).")
+
+
 def export_model(logger, profile: str, work: Path, model_dir: Path,
                  spm_model: Path, prepared_dir: Path, dataset_card: dict,
                  tool_versions: dict, config_variant: str,
                  pretrained: Path | None) -> Path:
     artifact_dir = REPO_ROOT / "artifacts" / "models" / "nmt" / SHORT[profile]
     artifact_dir.mkdir(parents=True, exist_ok=True)
-    checkpoint = model_dir / "model.npz"
-    if not checkpoint.exists():
-        candidates = sorted(model_dir.glob("model.iter*.npz"))
-        if not candidates:
-            raise StepError(f"training finished but no checkpoint exists under {model_dir}")
-        checkpoint = candidates[-1]
+    checkpoint, selection_evidence = _select_checkpoint(model_dir)
+    logger.log(f"checkpoint selection: {selection_evidence}")
     ckpt_dest = artifact_dir / "model.npz"
     shutil.copy2(checkpoint, ckpt_dest)
     spm_dest = artifact_dir / "vocab.spm"
@@ -197,7 +242,8 @@ def export_model(logger, profile: str, work: Path, model_dir: Path,
         provenance="Trained by training/nmt/train_nmt.py from the prepared parallel corpus "
                    f"(config variant: {config_variant}; pretrained checkpoint: "
                    f"{pretrained if pretrained else 'none — trained from scratch'}).",
-        extra={"config_variant": config_variant, "source_view": SOURCE_VIEW,
+        extra={"config_variant": config_variant, "checkpoint_selection": selection_evidence,
+               "source_view": SOURCE_VIEW,
                "train_pairs": dataset_card["splits"]["train"]["pairs"],
                "vocabulary": "joint SentencePiece model for source and target"})
     update_manifest_entry(

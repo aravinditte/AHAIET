@@ -20,9 +20,12 @@ records the library actually returns; nothing is estimated. Reading
 order is the segmentation order.
 """
 from __future__ import annotations
+import hashlib
 import importlib
 import importlib.metadata
 import shutil
+import threading
+from collections import OrderedDict
 from pathlib import Path
 
 from app.core.errors import AppError, UnavailableError
@@ -118,6 +121,38 @@ def _load_pipeline():
     return segment_fn, load_any, rpred, version
 
 
+# Loaded-model cache (AHAIET-035): Kraken checkpoints are expensive to
+# load, so a loaded model is reused across requests, keyed by the
+# checkpoint file's SHA-256 (a changed checkpoint is a different key),
+# bounded to two entries.
+_model_cache: "OrderedDict[str, object]" = OrderedDict()
+_model_cache_lock = threading.Lock()
+_MODEL_CACHE_MAX = 2
+
+
+def _checkpoint_key(checkpoint_path: Path) -> str:
+    h = hashlib.sha256()
+    with Path(checkpoint_path).open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _load_model_cached(load_any, checkpoint_path: Path):
+    key = _checkpoint_key(checkpoint_path)
+    with _model_cache_lock:
+        model = _model_cache.get(key)
+        if model is not None:
+            _model_cache.move_to_end(key)
+            return model
+    model = load_any(str(checkpoint_path))
+    with _model_cache_lock:
+        _model_cache[key] = model
+        while len(_model_cache) > _MODEL_CACHE_MAX:
+            _model_cache.popitem(last=False)
+    return model
+
+
 def recognize(image_path: Path, checkpoint_path: Path) -> dict:
     """Run Kraken page recognition with a local checkpoint.
 
@@ -141,7 +176,7 @@ def recognize(image_path: Path, checkpoint_path: Path) -> dict:
         image = image.convert("RGB")
     try:
         segmentation = segment_fn(image)
-        model = load_any(str(checkpoint_path))
+        model = _load_model_cached(load_any, checkpoint_path)
         records = list(rpred(model, image, segmentation))
     except KrakenIncompatible:
         raise
@@ -153,22 +188,37 @@ def recognize(image_path: Path, checkpoint_path: Path) -> dict:
     for line_no, record in enumerate(records):
         text = (getattr(record, "prediction", "") or "").strip()
         confidences = [float(c) * 100.0 for c in (getattr(record, "confidences", None) or [])]
-        all_conf.extend(confidences)
+        # Confidence alignment (AHAIET-041): Kraken confidences align
+        # to its own grapheme segmentation, which does not always match
+        # Python code-point positions (combining marks, ligatures).
+        # When the counts cannot be aligned reliably, confidences are
+        # reported as unavailable — never fabricated as zeros.
+        graphemes = list(text.replace(" ", ""))
+        aligned = len(confidences) == len(graphemes)
+        if aligned:
+            all_conf.extend(confidences)
+        # Real geometry when the segmentation provides it (AHAIET-041):
+        # prefer the record's own boundary/bbox; otherwise mark the
+        # geometry unavailable instead of inventing zero boxes.
+        boundary = getattr(record, "boundary", None) or getattr(record, "bbox", None)
+        geometry = {"boundary": boundary} if boundary else None
         lines.append({"line": line_no, "text": text,
                       "mean_confidence": round(sum(confidences) / len(confidences), 2)
-                      if confidences else None})
-        # Word-level view: split the line prediction; per-word confidence
-        # is the mean of that word's character confidences when Kraken
-        # provides character-aligned confidences of matching length.
-        chars = list(text.replace(" ", ""))
+                      if aligned and confidences else None,
+                      "confidence_unavailable": not aligned,
+                      "geometry": geometry,
+                      "geometry_unavailable": geometry is None})
         offset = 0
         for word in text.split():
             n = len(word)
-            word_conf = confidences[offset:offset + n] if len(confidences) >= len(chars) else []
+            word_conf = confidences[offset:offset + n] if aligned else []
             offset += n
             words.append({"text": word,
-                          "conf": round(sum(word_conf) / len(word_conf), 2) if word_conf else -1.0,
-                          "line": line_no, "left": 0, "top": 0, "width": 0, "height": 0})
+                          "conf": round(sum(word_conf) / len(word_conf), 2) if word_conf else None,
+                          "confidence_unavailable": not aligned,
+                          "line": line_no,
+                          "left": 0, "top": 0, "width": 0, "height": 0,
+                          "geometry_unavailable": geometry is None})
     full_text = "\n".join(line["text"] for line in lines if line["text"])
     return {"text": full_text, "words": words,
             "mean_confidence": round(sum(all_conf) / len(all_conf), 2) if all_conf else None,

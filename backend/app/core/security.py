@@ -139,17 +139,39 @@ class RateLimitMiddleware:
     are limited; everything else passes through untouched.
     """
 
-    def __init__(self, app, limits: dict[str, int], window_seconds: float = 60.0):
+    def __init__(self, app, limits: dict[str, int], window_seconds: float = 60.0,
+                 max_clients: int = 10000, trust_forwarded_for: bool = False):
         self.app = app
         self.limits = {p: n for p, n in limits.items() if n and n > 0}
         self.window = window_seconds
+        self.max_clients = max_clients
+        self.trust_forwarded_for = trust_forwarded_for
         self._hits: dict[tuple[str, str], deque] = {}
         self._lock = threading.Lock()
+        self._last_prune = 0.0
+
+    def _prune(self, now: float) -> None:
+        """Periodic registry hygiene (AHAIET-043): drop buckets whose
+        window has fully expired and enforce the hard cap on tracked
+        client keys, so the registry cannot grow without bound for
+        one-off client identifiers."""
+        if now - self._last_prune < self.window:
+            return
+        self._last_prune = now
+        expired = [k for k, bucket in self._hits.items()
+                   if not bucket or now - bucket[-1] >= self.window]
+        for k in expired:
+            self._hits.pop(k, None)
+        overflow = len(self._hits) - self.max_clients
+        if overflow > 0:
+            for k in list(self._hits)[:overflow]:
+                self._hits.pop(k, None)
 
     def _allow(self, client: str, path: str, limit: int) -> tuple[bool, int]:
         now = time.monotonic()
         key = (client, path)
         with self._lock:
+            self._prune(now)
             bucket = self._hits.setdefault(key, deque())
             while bucket and now - bucket[0] >= self.window:
                 bucket.popleft()
@@ -169,6 +191,14 @@ class RateLimitMiddleware:
             await self.app(scope, receive, send)
             return
         client = (scope.get("client") or ("unknown", 0))[0]
+        if self.trust_forwarded_for:
+            # Only behind a configured trusted reverse proxy
+            # (AHAIET-043): otherwise X-Forwarded-For is
+            # client-controlled and must not key the limiter.
+            for name, value in scope.get("headers", []):
+                if name.lower() == b"x-forwarded-for":
+                    client = value.decode("latin-1").split(",")[0].strip() or client
+                    break
         allowed, retry_after = self._allow(client, path, limit)
         if not allowed:
             resp = _error_response(

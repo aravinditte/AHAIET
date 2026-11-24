@@ -30,3 +30,17 @@ The importer is re-runnable (it replaces its own passages/words on each DB impor
 
 ## Rules
 Every corpus needs a named edition, a licence that permits the intended use, provenance (source + retrieval date), a recorded partition, and a checksum. Invented or unattributed "scholarly" entries must never be inserted. A reference translation may be returned only for a verified, identified corpus match within the selected language profile.
+
+## Ezra addition and book-group partitions (AHAIET-008)
+
+The importer now also parses `Ezra.xml` from the same morphhb source
+(same licence handling; sha256 recorded in
+`artifacts/manifests/datasets.json`). Biblical Aramaic ranges in Ezra:
+4:8-6:18 and 7:12-26 (67 verses). Partitions are assigned by BOOK
+group — Genesis 1-25 train, Genesis 26-50 validation, Ezra (both
+languages) train, Daniel Hebrew validation, Daniel Aramaic test — so
+no verse can appear in two splits; the importer's cross-split
+duplicate check still runs and recorded 0 duplicates. Recorded parse:
+2,170 verses, 2,165 with aligned English; Hebrew 1,903 verses, Aramaic
+267. Consequence: Hebrew has no test partition under this strategy
+(see docs/TRAINING.md) — an honest gap, not a silent one.

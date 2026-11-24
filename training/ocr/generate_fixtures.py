@@ -24,7 +24,13 @@ REPO = HERE.parents[1]
 SAMPLE = REPO / "training" / "datasets" / "fixtures" / "sample_passages.jsonl"
 OUT_DIR = HERE / "fixtures"
 DEFAULT_FONT = "/usr/share/fonts/truetype/noto/NotoSerifHebrew-Regular.ttf"
-SELECTED = {"Genesis 1:1": "genesis_1_1_hebrew", "Daniel 2:4": "daniel_2_4_aramaic"}
+# AHAIET-003: fixture ids/filenames come from the ONE canonical
+# manifest (training/ocr/fixtures/fixtures.json), which the Playwright
+# specs also read. SELECTED maps reference -> filename stem for the
+# renderer, derived from that manifest so the two can never drift.
+import json as _json
+_MANIFEST = _json.loads((OUT_DIR / "fixtures.json").read_text(encoding="utf-8"))
+SELECTED = {f["reference"]: f["filename"][:-4] for f in _MANIFEST["fixtures"]}
 FONT_SIZE = 44
 MARGIN = 60
 LINE_SPACING = 1.6

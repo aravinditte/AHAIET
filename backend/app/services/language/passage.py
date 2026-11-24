@@ -23,6 +23,11 @@ class Segmentation:
     segments: list[Segment] = field(default_factory=list)
     blank_lines: int = 0
     total_lines: int = 0
+    # AHAIET-012: the full line-layout token stream — one slot per
+    # original line, blank lines included with their exact positions —
+    # so reconstruction can reproduce leading/trailing/multiple blank
+    # lines and paragraph breaks instead of collapsing them.
+    line_slots: list[bool] = field(default_factory=list)  # True = blank line
 
     @property
     def is_multiline(self) -> bool:
@@ -39,16 +44,35 @@ def split_segments(text: str) -> Segmentation:
     out = Segmentation(total_lines=len(lines))
     for i, line in enumerate(lines):
         if line.strip():
+            out.line_slots.append(False)
             out.segments.append(Segment(index=len(out.segments),
                                         source_text=line.strip(),
                                         line_number=i + 1))
         else:
+            out.line_slots.append(True)
             out.blank_lines += 1
     return out
 
 
-def reassemble(segment_texts: list[str | None]) -> str:
+def reassemble(segment_texts: list[str | None],
+               segmentation: Segmentation | None = None) -> str:
     """Join per-segment English outputs in order. Untranslated segments
     contribute an empty line so the output keeps the input's line count
-    and the gap is visible rather than silently closed up."""
-    return "\n".join(t if t is not None else "" for t in segment_texts)
+    and the gap is visible rather than silently closed up.
+
+    When the Segmentation is supplied (AHAIET-012), the output is
+    rebuilt from the original line slots: blank lines reappear at
+    their exact original positions (leading, trailing, and repeated),
+    so a source `verse1\n\nverse2` yields `translation1\n\ntranslation2`.
+    Without it, the legacy join of the segment outputs is used."""
+    if segmentation is None or not segmentation.line_slots:
+        return "\n".join(t if t is not None else "" for t in segment_texts)
+    out: list[str] = []
+    seg_iter = iter(segment_texts)
+    for is_blank in segmentation.line_slots:
+        if is_blank:
+            out.append("")
+        else:
+            nxt = next(seg_iter, None)
+            out.append(nxt if nxt is not None else "")
+    return "\n".join(out)

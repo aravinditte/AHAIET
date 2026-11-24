@@ -69,3 +69,158 @@ See docs/VERIFICATION.md (setup, full test suites, per-case expected behaviour, 
 - **CI — ACTION MAY BE NEEDED:** .github/workflows/ci.yml and .github/workflows/model-tests.yml are written in the tree. If the GitHub App cannot push workflow files (a known GitHub restriction), add exactly these two files manually via the GitHub web UI (Add file → Create new file, path `.github/workflows/ci.yml` and `.github/workflows/model-tests.yml`, contents from the local tree). Until they are on GitHub, CI has not run and no CI result exists.
 - **Docs:** docs/SECURITY.md, docs/OFFLINE_OPERATION.md, docs/TROUBLESHOOTING.md, docs/ACCEPTANCE_AUDIT.md (14 implemented / 5 blocked / 0 not yet implemented — blocked: OCR on this machine (Tesseract binary), trained/evaluated model (no training run; Aramaic also needs the data decision), metrics from real test sets (no evaluation run), Windows validation (not yet executed on Windows), offline OCR leg (same binary)), docs/RELEASE.md (v0.1.0 scope + readiness + full Windows sequence). Manifest statuses unchanged.
 - **Next (owner-run):** the full verification pass in docs/VERIFICATION.md, then the still-open items from the sections above (OCR measurement once the binary exists, Hebrew SMT training + evaluation, Aramaic data decision).
+
+## Remediation section — code review findings (AHAIET-001..056)
+
+Status key: **fixed** = implemented in code (tests as code where the
+finding names one); **scaffolding** = code complete, the named
+prerequisite is external evidence only the developer can produce.
+
+- AHAIET-001 fixed — retrieval returns all identities; ambiguous exact
+  or diacritic-insensitive matches return candidates, never a verified
+  translation; `text_match` vs `passage_identity_verified` separated.
+- AHAIET-002 fixed — same mechanism for the nodiac collision case.
+- AHAIET-003 fixed — canonical fixture manifest
+  `training/ocr/fixtures/fixtures.json`; generator and Playwright both
+  read it.
+- AHAIET-004 fixed — dictionary baseline lexicon is train-partition
+  only; split + corpus sha256 recorded in the report.
+- AHAIET-005 fixed — `insufficient_test_data` gate (default minimum 10
+  test pairs); selection refuses to write.
+- AHAIET-006 fixed — evaluation-run records; comparability = identical
+  test-set sha256 + metric signature; stale metrics ignored/flagged;
+  fallback recorded as `chrf`, never `chrf_pp`.
+- AHAIET-007 scaffolding — opt-in real-pipeline acceptance test coded
+  (`backend/tests/test_real_pipeline_acceptance.py`, model_required);
+  prerequisite: a provisioned machine (Tesseract + heb + a resolved
+  artifact/corpus) and a developer run.
+- AHAIET-008 fixed — Ezra imported as data preparation; book-group
+  partitions; counts in docs/TRAINING.md and datasets.json. Daniel
+  Aramaic stays test-only.
+- AHAIET-009 fixed — async /api/process (202), bounded executor,
+  state machine, cancel endpoint, job expiry, startup recovery.
+- AHAIET-010 fixed — all-segments-failed ends jobs in terminal
+  `failed`; `awaiting_translation` removed.
+- AHAIET-011 fixed — all-segments-failed translate returns 422;
+  partial stays 200.
+- AHAIET-012 fixed — segmentation preserves blank-line slots;
+  reassembly reproduces the layout.
+- AHAIET-013 fixed — corpus revision in `corpus_meta`, bumped by the
+  importer in its own process, part of every retrieval cache key.
+- AHAIET-014 fixed — `passage_tokens` inverted index + shortlist cap
+  (50) before Jaccard variant scoring.
+- AHAIET-015 fixed — `persist_results` separated from
+  `history_enabled`; ephemeral in-memory jobs with TTL; test asserts
+  no text in SQLite.
+- AHAIET-016 fixed — scheduled retention: scripts/install-retention-task.ps1
+  + cron/systemd note; `maintenance_runs` records every sweep;
+  last sweep exposed in capabilities.
+- AHAIET-017 fixed — startup sweep failure logged structurally and
+  surfaced as `retention.degraded` in capabilities.
+- AHAIET-018 fixed — migrate() runs each migration in an explicit
+  transaction with the version row; v1-v3 SQL unchanged; v4 added.
+- AHAIET-019 fixed — artifact resolution recomputes SHA-256 + size for
+  every card-listed file; mismatch/missing/escaping path -> unusable
+  with reasons; resolution cached by manifest/file signature.
+- AHAIET-020 fixed — selection returns an ordered engine list;
+  same-profile fallback with per-engine warnings; never crosses
+  profiles.
+- AHAIET-021 fixed — empty decoder stdout -> `translation_empty_output`;
+  multiline single-segment output -> `translation_output_alignment`
+  (blank padding lines tolerated).
+- AHAIET-022 fixed — Tesseract timeout/OSError/decode -> typed
+  503/504; TSV integer validation -> `ocr_parse_error`; configured
+  timeout used.
+- AHAIET-023 fixed — Pillow MedianFilter replaces the 9-array stack.
+- AHAIET-024 fixed — deskew scoring masked to the text region on a
+  darkness map with paper-consistent fill.
+- AHAIET-025 fixed — script tiers model_installed /
+  experimentally_evaluated / production_supported with gates (finite
+  CER in [0, 0.5], >= 20 independent samples by default, script match,
+  dataset + checkpoint checksums).
+- AHAIET-026 fixed — translate lineage: original_ocr_text raw-or-null,
+  corrected_source_text separate, ocr_request_id accepted.
+- AHAIET-027 fixed — translation invalidated on text/language/profile/
+  preprocessing change; AbortControllers + monotonic request ids.
+- AHAIET-028 fixed — uncertain spans carry index/occurrence_id/block/
+  par/line_id; SourceEditor highlights by occurrence id.
+- AHAIET-029 fixed — E2E split: honest-unsupported smoke specs +
+  AHAIET_E2E_GATE=release acceptance specs that FAIL when fixtures or
+  models are absent.
+- AHAIET-030 scaffolding — same acceptance test as AHAIET-007 (the
+  Windows half of the evidence is acceptance-audit criterion 18 /
+  test_windows_setup_smoke: scripts reviewed, not executed on Windows).
+- AHAIET-031 fixed — settings validators with clear startup errors;
+  error sanitization (paths stripped, bounded) in adapters and the
+  global error envelope.
+- AHAIET-032 fixed — provision-ocr.ps1 -Install (winget install,
+  --list-langs heb verification, fixture smoke OCR, persists
+  ahaiet.local.env); start-backend.ps1 loads it; setup-windows.ps1
+  accepts any Python 3.11+ via `py -3` chain and invokes the venv
+  interpreter directly.
+- AHAIET-033 fixed — global OCR/translation semaphores, per-job
+  deadline across segments, queue-full 503 with Retry-After.
+- AHAIET-034 fixed — readiness probe runs bounded TTL-cached
+  `tesseract --list-langs`; binary_available /
+  language_data_available / usable reported separately; panel updated.
+- AHAIET-035 fixed — passage translation uses ONE decoder invocation
+  per segment batch with strict line-count alignment; Kraken model
+  cached per checkpoint hash (max 2).
+- AHAIET-036 fixed — profile_choice_required (422) with candidate
+  profiles + evidence when no profile is selected and evidence is
+  ambiguous; single-profile evidence proceeds and states its basis.
+- AHAIET-037 fixed — full decode in validation, warnings-as-errors,
+  multipage/animation rejected for the single-image pipeline.
+- AHAIET-038 fixed — decoded+intermediate byte budget enforced before
+  heavy preprocessing steps.
+- AHAIET-039 fixed — orientation step reports attempted vs applied
+  from the EXIF tag; step renamed `pixel_upscale` with scaler +
+  resolutions (report label change, noted in docs/API.md + OCR.md).
+- AHAIET-040 fixed — TSV block/par/line ids retained in the OCR
+  result structure (additive span fields).
+- AHAIET-041 fixed — Kraken confidences: `confidence_unavailable`
+  instead of fabricated zeros when unalignable; real segmentation
+  geometry used when provided, else marked unavailable; kraken pin
+  narrowed to >=4.3,<5.0 in the training extra.
+- AHAIET-042 fixed — Literal profile/engine/preprocessing types,
+  bounded fields, upload_id pattern, psm 0..13 in schemas.
+- AHAIET-043 fixed — rate limiter prunes expired buckets, hard cap on
+  tracked clients, X-Forwarded-For honoured only with
+  AHAIET_TRUST_FORWARDED_FOR.
+- AHAIET-044 fixed — upload writes are temp-file + fsync + os.replace
+  with existing-file hash/size verification (409 on conflict).
+- AHAIET-045 fixed — optional AHAIET_ACCESS_TOKEN gates upload reads +
+  history; threat model updated in docs/SECURITY.md (hash id is a
+  locator, not authorization; keep loopback binding).
+- AHAIET-046 fixed — export/copy per-action disabled states; errors
+  surfaced; object URLs revoked after a tick.
+- AHAIET-047 fixed — readiness/scripts panels: manual refresh +
+  refresh on window focus; new fields/tiers shown.
+- AHAIET-048 fixed — Windows doubles `echo_decoder.cmd` alongside the
+  POSIX script; tests pick by platform.
+- AHAIET-049 fixed — clean_corpus asserts equal line counts and logs/
+  counts every discarded pair with reason.
+- AHAIET-050 fixed — SMT export resolves every moses.ini path inside
+  the export dir, writes export_verification.json, fails loudly on
+  unresolved refs.
+- AHAIET-051 fixed — Marian checkpoint selection uses explicit
+  evidence only (model.npz.best / validation-log best iteration);
+  never lexical-last; fails without evidence.
+- AHAIET-052 fixed — manuscript_registry.json (empty entries) +
+  rights/annotation requirements + stratified evaluation support in
+  evaluate_ocr.py. No images fabricated.
+- AHAIET-053 fixed — ACCEPTANCE_AUDIT regenerated with the
+  coded/unit_tested/integrated/end_to_end_tested/blocked/unsupported
+  states, corrected paths (services/ocr/script_profiles.py,
+  services/verification/service.py), and a docs link-check test as
+  code (backend/tests/check_docs_links.py). Nothing is labelled
+  end_to_end_tested.
+- AHAIET-054 fixed — exact pins for direct backend dependencies (set +
+  rationale in docs/RELEASE.md); pip-audit / npm audit scan steps
+  added to the CI workflow files (which still need the repository
+  owner's manual addition for the workflows permission).
+- AHAIET-055 fixed — adapter/concurrency settings validated at
+  startup (timeouts, workers, caps, TTLs all bounded).
+- AHAIET-056 fixed — docs/PROVISIONING.md state machine with a
+  verification command per state; capabilities exposes
+  provisioning_state computed from live checks.

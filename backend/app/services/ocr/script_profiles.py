@@ -21,6 +21,7 @@ a profile is *supported* is decided here, at runtime, from evidence:
 from __future__ import annotations
 import hashlib
 import json
+import math
 from pathlib import Path
 
 from app.core.config import REPO_ROOT, Settings
@@ -81,43 +82,89 @@ def evaluation_record(profile_id: str) -> dict | None:
 
 
 def profile_support(settings: Settings, profile: dict, tesseract_available: bool) -> dict:
-    """Compute one registry row's live support status."""
+    """Compute one registry row's live support status and tier.
+
+    Tiers (AHAIET-025) replace the old binary supported flag:
+    - model_installed: a checkpoint file exists on disk, nothing measured.
+    - experimentally_evaluated: a measured evaluation record matches a
+      checkpoint on disk, but at least one production gate fails.
+    - production_supported: CER is finite and within [0, 0.5], the
+      record carries at least Settings.script_min_test_samples
+      independent test samples, the record's script/dialect match this
+      profile, and both the checkpoint sha256 and the test-dataset
+      sha256 are recorded and the checkpoint hash matches disk.
+    `status` stays for backwards compatibility: "supported" only for
+    production_supported (and for the Tesseract square-script route
+    when usable); the tier + evidence are the precise report."""
     pid = profile["id"]
     base = {"id": pid, "name": profile["name"], "script": profile["script"],
             "route": profile["route"], "note": profile.get("note")}
     if profile["route"] == "tesseract":
         if tesseract_available:
-            return {**base, "status": "supported", "engine": "tesseract",
-                    "reason": None, "evaluation": None, "checkpoint": None}
-        return {**base, "status": "unsupported", "engine": None,
+            return {**base, "status": "supported", "tier": "production_supported",
+                    "engine": "tesseract",
+                    "reason": None, "evaluation": None, "checkpoint": None,
+                    "evidence": {"route": "tesseract", "usable": True}}
+        return {**base, "status": "unsupported", "tier": "unsupported", "engine": None,
                 "reason": "The Tesseract route for this script is not provisioned "
                           "(binary and/or traineddata missing).",
-                "evaluation": None, "checkpoint": None}
-    # Kraken route: evidence-gated.
+                "evaluation": None, "checkpoint": None,
+                "evidence": {"route": "tesseract", "usable": False}}
+    # Kraken route: evidence-gated tiers.
     record = evaluation_record(pid)
     checkpoints = kraken_checkpoints(settings, pid)
+    first_checkpoint = checkpoints[0] if checkpoints else None
     if record is None:
-        return {**base, "status": "unsupported", "engine": None,
+        tier = "model_installed" if checkpoints else "unsupported"
+        return {**base, "status": "unsupported", "tier": tier, "engine": None,
                 "reason": "No verified checkpoint + evaluation record: no measured evaluation "
                           f"record exists at artifacts/benchmarks/htr-eval-{pid}.json.",
-                "evaluation": None, "checkpoint": checkpoints[0] if checkpoints else None}
+                "evaluation": None, "checkpoint": first_checkpoint,
+                "evidence": {"checkpoints_on_disk": len(checkpoints)}}
     cer = record.get("cer")
     if not isinstance(cer, (int, float)):
-        return {**base, "status": "unsupported", "engine": None,
+        return {**base, "status": "unsupported",
+                "tier": "model_installed" if checkpoints else "unsupported", "engine": None,
                 "reason": "An evaluation record exists but carries no measured CER value.",
-                "evaluation": record, "checkpoint": None}
+                "evaluation": record, "checkpoint": first_checkpoint,
+                "evidence": {"checkpoints_on_disk": len(checkpoints)}}
     wanted = record.get("checkpoint_sha256")
     match = next((c for c in checkpoints if wanted and c["sha256"] == wanted), None)
     if match is None:
-        return {**base, "status": "unsupported", "engine": None,
+        return {**base, "status": "unsupported",
+                "tier": "model_installed" if checkpoints else "unsupported", "engine": None,
                 "reason": "The evaluation record's checkpoint hash does not match any Kraken "
                           "checkpoint file present on disk for this profile.",
-                "evaluation": record, "checkpoint": None}
-    return {**base, "status": "supported", "engine": "kraken",
-            "reason": None, "evaluation": {"cer": cer, "wer": record.get("wer"),
-                                           "test_set": record.get("test_set"),
-                                           "evaluated_at": record.get("evaluated_at")},
-            "checkpoint": match}
+                "evaluation": record, "checkpoint": None,
+                "evidence": {"checkpoints_on_disk": len(checkpoints)}}
+    # A measured record matched to a real checkpoint: at least
+    # experimentally evaluated. Production gates follow.
+    samples = record.get("test_samples", record.get("samples", record.get("lines")))
+    gates = {
+        "cer_finite": isinstance(cer, (int, float)) and math.isfinite(float(cer)),
+        "cer_in_range": isinstance(cer, (int, float)) and 0.0 <= float(cer) <= 0.5,
+        "min_samples": isinstance(samples, int) and samples >= settings.script_min_test_samples,
+        "script_match": record.get("script_profile") in (None, pid),
+        "dataset_checksum_recorded": bool(record.get("dataset_sha256")),
+        "checkpoint_checksum_matched": True,
+    }
+    evaluation = {"cer": cer, "wer": record.get("wer"),
+                  "test_set": record.get("test_set"),
+                  "test_samples": samples,
+                  "dataset_sha256": record.get("dataset_sha256"),
+                  "evaluated_at": record.get("evaluated_at")}
+    if all(gates.values()):
+        return {**base, "status": "supported", "tier": "production_supported",
+                "engine": "kraken", "reason": None,
+                "evaluation": evaluation, "checkpoint": match,
+                "evidence": {"gates": gates}}
+    failed = [name for name, ok in gates.items() if not ok]
+    return {**base, "status": "unsupported", "tier": "experimentally_evaluated",
+            "engine": None,
+            "reason": "Measured evaluation exists but production gates fail: "
+                      + ", ".join(failed) + ".",
+            "evaluation": evaluation, "checkpoint": match,
+            "evidence": {"gates": gates}}
 
 
 def support_matrix(settings: Settings, tesseract_available: bool) -> list[dict]:

@@ -37,6 +37,8 @@ No paraphrase or dictionary gloss is ever substituted.
 from __future__ import annotations
 import copy
 import json
+import threading
+import time
 from pathlib import Path
 from app.core.config import Settings
 from app.core.errors import AppError, UnavailableError, ValidationAppError
@@ -47,6 +49,70 @@ from app.storage import cache as translation_cache
 from . import model_artifacts, selection
 
 PROFILES = ["biblical_hebrew", "biblical_aramaic"]
+
+
+class ProfileChoiceRequired(AppError):
+    """AHAIET-036: no profile was selected and the evidence does not
+    single out one profile, so the caller must choose explicitly. The
+    structured response lists the candidate profiles and the evidence
+    per profile; no profile is tried first-success."""
+
+    def __init__(self, candidates: list[str], evidence: dict):
+        super().__init__(422, "profile_choice_required",
+                         "The language profile is ambiguous for this text and no profile "
+                         "was selected, so no translation was attempted. Select one of "
+                         "the candidate profiles explicitly.",
+                         "Script alone cannot distinguish the Hebrew-script profiles; "
+                         "the per-profile evidence is listed in the response.")
+        self.candidates = candidates
+        self.evidence = evidence
+
+
+class AmbiguousMatchError(UnavailableError):
+    """AHAIET-001/002: the text matches multiple passage identities (or
+    a diacritic-insensitive key spanning differing vocalized forms), so
+    no translation is certified as verified. The candidate list is
+    attached for the caller to present."""
+
+    def __init__(self, candidates: list[dict], profile: str):
+        super().__init__("ambiguous_match",
+                         "This text matches more than one stored passage identity, so no "
+                         "single verified reference translation can be certified for it. "
+                         "The candidates are listed; none was chosen silently.",
+                         f"Ambiguous in profile {profile}: "
+                         + ", ".join(c.get("reference", "?") for c in candidates))
+        self.status_code = 422
+        self.candidates = candidates
+
+
+# Global concurrency bound for trained-model inference (AHAIET-033):
+# one semaphore per configured limit value.
+_translation_semaphores: dict[int, threading.BoundedSemaphore] = {}
+_translation_semaphores_lock = threading.Lock()
+
+
+def _translation_semaphore(settings: Settings) -> threading.BoundedSemaphore:
+    limit = max(1, settings.max_concurrent_translation)
+    with _translation_semaphores_lock:
+        sem = _translation_semaphores.get(limit)
+        if sem is None:
+            sem = threading.BoundedSemaphore(limit)
+            _translation_semaphores[limit] = sem
+        return sem
+
+
+def _remaining(deadline: float | None, settings: Settings) -> float:
+    """Seconds of job budget left, capped by the per-call timeout."""
+    cap = settings.translation_timeout_s
+    if deadline is None:
+        return cap
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise AppError(504, "job_deadline_exceeded",
+                       "The per-job total deadline was exceeded, so the request stopped "
+                       "instead of running unbounded segment work.",
+                       f"job_deadline_s={settings.job_deadline_s}")
+    return min(cap, left)
 
 def load_models_manifest(settings: Settings) -> dict:
     p: Path = settings.models_manifest
@@ -112,75 +178,120 @@ def _attach_verification(result: dict, text: str, settings: Settings,
     result.pop("_model_metrics", None)
 
 
-def _run_selected(text: str, settings: Settings, profiles: list[str]) -> dict | None:
-    """Try the selected trained engine per profile, in profile order.
+def _finalize_model_result(chosen, result: dict, profile: str, text: str,
+                           settings: Settings, extra_warnings: list[str]) -> dict:
+    unevaluated = chosen.evaluation_state != "evaluated"
+    warnings = list(extra_warnings) + list(result.get("warnings", []))
+    if unevaluated:
+        warnings.append(
+            "This translation was produced by a trained model with no evaluation metrics "
+            "recorded by the shared evaluation harness (unevaluated_model). Its quality has "
+            "not been measured; review it against the source before relying on it.")
+    provenance = {
+        "engine": chosen.engine,
+        "model_id": chosen.entry.get("id"),
+        "model_version": chosen.model_version,
+        "artifact_sha256": chosen.artifact_sha256,
+        "evaluation_state": chosen.evaluation_state,
+        "dataset_card_sha256": (chosen.card or {}).get("dataset_card_sha256"),
+        "retrieval_citation": None,
+        "cached": False,
+    }
+    result.update({
+        "translation_method": chosen.engine,
+        "model": {**chosen.entry, "model_version": chosen.model_version,
+                  "artifact_sha256": chosen.artifact_sha256,
+                  "evaluation_state": chosen.evaluation_state},
+        "source_references": [],
+        "matched_language": profile,
+        "variant_candidate": None,
+        "warnings": warnings,
+        "unevaluated_model": unevaluated,
+        "cached": False,
+        "provenance": provenance,
+        "_model_metrics": _model_metrics(chosen),
+    })
+    key = translation_cache.cache_key(profile, text, chosen.engine,
+                                      chosen.artifact_sha256)
+    translation_cache.put(settings, key, profile, chosen.engine,
+                          chosen.artifact_sha256,
+                          {k: v for k, v in result.items() if k != "_model_metrics"})
+    return result
 
-    Evaluated engines are preferred over unevaluated ones by the
-    selection service; an unevaluated winner is flagged on the result.
-    Results are served from / stored to the translation cache — the
-    cache is consulted only here, i.e. only for trained-model output,
-    never for verified retrieval."""
+
+def _run_selected(text: str, settings: Settings, profiles: list[str],
+                  deadline: float | None = None) -> dict | None:
+    """Try the ordered trained engines per profile (AHAIET-020).
+
+    For each profile, EVERY complete engine is tried in selection
+    order within that same profile; each failure is recorded as a
+    warning with provenance on the eventual result (or in the final
+    error). Profiles are never crossed silently: with an explicit
+    profile only that profile is tried; without one, the profile
+    order is the documented PROFILES order and the matched profile is
+    reported on the result. Results are served from / stored to the
+    translation cache — consulted only here, never for retrieval."""
     from .moses_adapter import run as run_moses_engine
     from .marian_adapter import run as run_marian_engine
+    failures: list[str] = []
     last_error: UnavailableError | None = None
     for profile in profiles:
-        chosen = selection.select_engine(settings, profile)
-        if chosen is None:
-            continue
-        key = translation_cache.cache_key(profile, text, chosen.engine,
-                                          chosen.artifact_sha256)
-        cached = translation_cache.get(settings, key)
-        if cached is not None:
-            result = copy.deepcopy(cached)
-            result["cached"] = True
-            if isinstance(result.get("provenance"), dict):
-                result["provenance"]["cached"] = True
-            return result
-        runner = run_marian_engine if chosen.engine == "marian" else run_moses_engine
+        for chosen in selection.select_engines(settings, profile):
+            key = translation_cache.cache_key(profile, text, chosen.engine,
+                                              chosen.artifact_sha256)
+            cached = translation_cache.get(settings, key)
+            if cached is not None:
+                result = copy.deepcopy(cached)
+                result["cached"] = True
+                if isinstance(result.get("provenance"), dict):
+                    result["provenance"]["cached"] = True
+                if failures:
+                    result.setdefault("warnings", []).extend(failures)
+                return result
+            runner = run_marian_engine if chosen.engine == "marian" else run_moses_engine
+            try:
+                with _translation_semaphore(settings):
+                    result = runner(chosen.entry, text, settings,
+                                    timeout_s=_remaining(deadline, settings))
+            except (UnavailableError, AppError) as e:
+                # e.g. artifact complete but the decoder binary is
+                # absent/broken, empty output, or a timeout: record it
+                # and fall through to the next engine IN THIS PROFILE.
+                failures.append(
+                    f"Engine {chosen.engine} for {profile} failed ({e.code}: {e.message})")
+                if isinstance(e, UnavailableError):
+                    last_error = e
+                continue
+            return _finalize_model_result(chosen, result, profile, text, settings, failures)
+    if last_error is not None and failures:
+        err = last_error
+        err.detail = ((err.detail or "") + " Engines tried: " + " | ".join(failures)).strip()
+        raise err
+    return None
+
+
+def _run_selected_batch(texts: list[str], settings: Settings, profile: str,
+                        deadline: float | None = None) -> list[dict] | None:
+    """Batch counterpart of _run_selected for one profile
+    (AHAIET-035): one decoder invocation for the whole segment batch
+    per engine, engines tried in selection order within the profile.
+    Returns one finalized result per input text, or None when no
+    engine in the profile could run the batch."""
+    from .moses_adapter import run_batch as run_moses_batch
+    from .marian_adapter import run_batch as run_marian_batch
+    failures: list[str] = []
+    for chosen in selection.select_engines(settings, profile):
+        runner = run_marian_batch if chosen.engine == "marian" else run_moses_batch
         try:
-            result = runner(chosen.entry, text, settings)
-        except UnavailableError as e:
-            # e.g. artifact complete but the decoder binary is absent:
-            # record it and fall through to any other complete engine.
-            last_error = e
+            with _translation_semaphore(settings):
+                results = runner(chosen.entry, texts, settings,
+                                 timeout_s=_remaining(deadline, settings))
+        except (UnavailableError, AppError) as e:
+            failures.append(
+                f"Engine {chosen.engine} for {profile} failed ({e.code}: {e.message})")
             continue
-        unevaluated = chosen.evaluation_state != "evaluated"
-        warnings = list(result.get("warnings", []))
-        if unevaluated:
-            warnings.append(
-                "This translation was produced by a trained model with no evaluation metrics "
-                "recorded by the shared evaluation harness (unevaluated_model). Its quality has "
-                "not been measured; review it against the source before relying on it.")
-        provenance = {
-            "engine": chosen.engine,
-            "model_id": chosen.entry.get("id"),
-            "model_version": chosen.model_version,
-            "artifact_sha256": chosen.artifact_sha256,
-            "evaluation_state": chosen.evaluation_state,
-            "dataset_card_sha256": (chosen.card or {}).get("dataset_card_sha256"),
-            "retrieval_citation": None,
-            "cached": False,
-        }
-        result.update({
-            "translation_method": chosen.engine,
-            "model": {**chosen.entry, "model_version": chosen.model_version,
-                      "artifact_sha256": chosen.artifact_sha256,
-                      "evaluation_state": chosen.evaluation_state},
-            "source_references": [],
-            "matched_language": profile,
-            "variant_candidate": None,
-            "warnings": warnings,
-            "unevaluated_model": unevaluated,
-            "cached": False,
-            "provenance": provenance,
-            "_model_metrics": _model_metrics(chosen),
-        })
-        translation_cache.put(settings, key, profile, chosen.engine,
-                              chosen.artifact_sha256,
-                              {k: v for k, v in result.items() if k != "_model_metrics"})
-        return result
-    if last_error is not None:
-        raise last_error
+        return [_finalize_model_result(chosen, result, profile, text, settings, failures)
+                for result, text in zip(results, texts)]
     return None
 
 
@@ -191,44 +302,88 @@ def translate(text: str, settings: Settings, language: str | None = None,
     timer = StageTimer()
     profiles = [language] if language else PROFILES
     variant = None
+    ambiguous: tuple[str, list[dict]] | None = None
+    matches: list[tuple[str, dict]] = []
+    evidence: dict[str, dict] = {}
     with timer.stage("retrieval"):
         for profile in profiles:
             result = retrieval.lookup(settings.db_path, text, profile)
+            evidence[profile] = {
+                "verified_match": result["match"] is not None,
+                "ambiguous_candidates": len(result.get("candidates") or []),
+                "variant_candidate": result["variant_candidate"] is not None,
+            }
             if result["match"] is not None:
-                match = result["match"]
-                out = {"english_translation": match["english_text"],
-                       "translation_method": "verified_reference",
-                       "engine": "verified_reference",
-                       "model": {"id": "corpus-reference", "match_type": match["match_type"]},
-                       "model_version": None, "artifact_sha256": None,
-                       "evaluation_state": None, "coverage": None, "warnings": [],
-                       "source_references": [match],
-                       "matched_language": profile,
-                       "variant_candidate": None,
-                       "unevaluated_model": False, "cached": False,
-                       "provenance": {
-                           "engine": "verified_reference",
-                           "model_id": "corpus-reference",
-                           "model_version": None, "artifact_sha256": None,
-                           "evaluation_state": None, "dataset_card_sha256": None,
-                           "retrieval_citation": {
-                               "passage_id": match["passage_id"],
-                               "reference": match["reference"],
-                               "match_type": match["match_type"],
-                               "source_edition": match["source_edition"],
-                               "translation_edition": match["translation_edition"],
-                               "license": match["license"],
-                               "provenance": match["provenance"]},
-                           "cached": False}}
-                _attach_verification(out, text, settings, timer, context)
-                out["stage_timings_ms"] = timer.as_dict()
-                return out
+                matches.append((profile, result["match"]))
+            if ambiguous is None and result.get("candidates"):
+                ambiguous = (profile, result["candidates"])
             if variant is None and result["variant_candidate"] is not None:
                 variant = result["variant_candidate"]
+    # AHAIET-036: with no selected profile, evidence must single out
+    # one profile. Matches in multiple profiles -> explicit choice.
+    if language is None and len(matches) > 1:
+        raise ProfileChoiceRequired([p for p, _ in matches], evidence)
+    if matches:
+        profile, match = matches[0]
+        out = {"english_translation": match["english_text"],
+               "translation_method": "verified_reference",
+               "engine": "verified_reference",
+               "model": {"id": "corpus-reference", "match_type": match["match_type"]},
+               "model_version": None, "artifact_sha256": None,
+               "evaluation_state": None, "coverage": None, "warnings": [],
+               "source_references": [match],
+               "matched_language": profile,
+               "variant_candidate": None,
+               "unevaluated_model": False, "cached": False,
+               "text_match": True, "passage_identity_verified": True,
+               "candidates": [],
+               "profile_evidence": {"basis": "user_selection" if language else
+                                    "unique_verified_match", "profiles": evidence},
+               "provenance": {
+                   "engine": "verified_reference",
+                   "model_id": "corpus-reference",
+                   "model_version": None, "artifact_sha256": None,
+                   "evaluation_state": None, "dataset_card_sha256": None,
+                   "retrieval_citation": {
+                       "passage_id": match["passage_id"],
+                       "reference": match["reference"],
+                       "match_type": match["match_type"],
+                       "source_edition": match["source_edition"],
+                       "translation_edition": match["translation_edition"],
+                       "license": match["license"],
+                       "provenance": match["provenance"]},
+                   "cached": False}}
+        _attach_verification(out, text, settings, timer, context)
+        out["stage_timings_ms"] = timer.as_dict()
+        return out
+    # AHAIET-001/002: an ambiguous key match certifies nothing. When a
+    # profile was selected, or the ambiguity is the only evidence,
+    # surface the candidates instead of any translation.
+    if ambiguous is not None:
+        profile, candidates = ambiguous
+        if language is not None or len(profiles) == 1 or \
+                not any(evidence[p]["verified_match"] for p in evidence):
+            raise AmbiguousMatchError(candidates, profile)
+    if language is None:
+        # No retrieval evidence singles out a profile. If trained
+        # models exist for more than one profile, the choice is the
+        # user's; if exactly one profile has a model, that is the
+        # evidence used and it is stated on the result.
+        model_profiles = [p for p in PROFILES if provisioned_models(settings, p)]
+        if len(model_profiles) > 1:
+            raise ProfileChoiceRequired(model_profiles, evidence)
+        if len(model_profiles) == 1:
+            profiles = model_profiles
     with timer.stage("translation"):
         model_result = _run_selected(text, settings, profiles)
     if model_result is not None:
         model_result["variant_candidate"] = variant
+        model_result.setdefault("text_match", False)
+        model_result.setdefault("passage_identity_verified", False)
+        model_result.setdefault("candidates", [])
+        model_result["profile_evidence"] = {
+            "basis": "user_selection" if language else "single_provisioned_profile",
+            "profiles": evidence}
         _attach_verification(model_result, text, settings, timer, context)
         model_result["stage_timings_ms"] = timer.as_dict()
         return model_result
@@ -288,6 +443,30 @@ def translate_passage(text: str, settings: Settings, language: str | None = None
         return result
 
     timer = StageTimer()
+    deadline = time.monotonic() + settings.job_deadline_s
+    # Batched model stage (AHAIET-035): with an explicit profile,
+    # segments that have no verified retrieval match are decoded in
+    # ONE decoder invocation per engine (line-in/line-out) instead of
+    # one subprocess per segment. Segments the batch cannot resolve
+    # fall through to the per-segment path below, which produces
+    # their individual statuses/errors.
+    batch_results: dict[int, dict] = {}
+    if language is not None and len(segmentation.segments) > 1:
+        pending = []
+        for seg in segmentation.segments:
+            look = retrieval.lookup(settings.db_path, seg.source_text, language)
+            if look["match"] is None and not look.get("candidates"):
+                pending.append(seg)
+        if len(pending) > 1:
+            try:
+                with timer.stage("translation"):
+                    batch = _run_selected_batch([seg.source_text for seg in pending],
+                                                settings, language, deadline)
+            except AppError:
+                batch = None
+            if batch:
+                for seg, result in zip(pending, batch):
+                    batch_results[seg.index] = result
     segment_results: list[dict] = []
     english_parts: list[str | None] = []
     references: list[dict] = []
@@ -297,6 +476,30 @@ def translate_passage(text: str, settings: Settings, language: str | None = None
     variant = None
     translated_count = 0
     for seg in segmentation.segments:
+        if seg.index in batch_results:
+            result = batch_results[seg.index]
+            translated_count += 1
+            methods.append(result["translation_method"])
+            references.extend(result.get("source_references", []))
+            if first_provenance is None:
+                first_provenance = result.get("provenance")
+            for w in result.get("warnings", []):
+                warnings.append(f"[segment {seg.index + 1}] {w}")
+            segment_results.append({"index": seg.index, "source_text": seg.source_text,
+                                    "status": "translated",
+                                    "english_translation": result["english_translation"],
+                                    "method": result["translation_method"],
+                                    "warnings": list(result.get("warnings", [])), "error": None})
+            english_parts.append(result["english_translation"])
+            continue
+        if time.monotonic() > deadline:
+            segment_results.append({"index": seg.index, "source_text": seg.source_text,
+                                    "status": "failed", "english_translation": None,
+                                    "method": None, "warnings": [],
+                                    "error": "job_deadline_exceeded: the per-job total "
+                                             "deadline was exceeded before this segment ran"})
+            english_parts.append(None)
+            continue
         try:
             with timer.stage("translation"):
                 result = translate(seg.source_text, settings, language, context)
@@ -338,7 +541,7 @@ def translate_passage(text: str, settings: Settings, language: str | None = None
         status = "completed"
     else:
         status = "partial"
-    english = reassemble(english_parts) if translated_count else None
+    english = reassemble(english_parts, segmentation) if translated_count else None
     out: dict = {
         "english_translation": english,
         "translation_method": methods[0] if len(set(methods)) == 1 else "passage_mixed",

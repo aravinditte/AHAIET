@@ -16,9 +16,12 @@ flags come from morphhb itself (morph codes prefixed 'H' = Hebrew,
 'A' = Aramaic), so the Hebrew narration opening Daniel 2:4 keeps Hebrew
 word flags inside an Aramaic-range verse, and that is recorded.
 
-Partitions are assigned by book/chapter blocks, never by random verse
-draw, so near-identical verses cannot leak across partitions:
-Genesis chapters 1-25 -> train, 26-50 -> validation, Daniel -> test.
+Partitions are assigned by book blocks, never by random verse draw,
+so near-identical verses cannot leak across partitions: Genesis
+chapters 1-25 -> train, 26-50 -> validation; Ezra -> train (both
+languages; an independent book supplying Biblical Aramaic training
+material); Daniel Hebrew -> validation; Daniel Aramaic -> test
+(Daniel stays the held-out book for Aramaic). See _partition.
 """
 from __future__ import annotations
 import argparse, hashlib, io, json, re, sys, urllib.request, zipfile
@@ -26,22 +29,28 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from app.services.language.normalize import normalize, normalize_nodiac  # noqa: E402
+from app.services.language.normalize import normalize, normalize_nodiac, tokens  # noqa: E402
 from app.storage import db as store  # noqa: E402
 
 OSIS_NS = {"o": "http://www.bibletechnologies.net/2003/OSIS/namespace"}
 MORPHHB_URLS = {
     "Gen": "https://raw.githubusercontent.com/openscriptures/morphhb/master/wlc/Gen.xml",
     "Dan": "https://raw.githubusercontent.com/openscriptures/morphhb/master/wlc/Dan.xml",
+    "Ezra": "https://raw.githubusercontent.com/openscriptures/morphhb/master/wlc/Ezra.xml",
 }
 WEB_ZIP_URL = "https://ebible.org/Scriptures/eng-web_vpl.zip"
 SOURCE_EDITION = "Westminster Leningrad Codex (WLC) via Open Scriptures morphhb (OSHB)"
 TRANSLATION_EDITION = "World English Bible (WEB)"
 SOURCE_LICENSE = "WLC text: Public Domain; morphhb annotations: CC BY 4.0"
 ENGLISH_LICENSE = "World English Bible: Public Domain"
-BOOK_NAMES = {"Gen": "Genesis", "Dan": "Daniel"}
-WEB_BOOK_CODES = {"Gen": "GEN", "Dan": "DAN"}
-VERSE_RE = re.compile(r"^(Gen|Dan)\.(\d+)\.(\d+)$")
+BOOK_NAMES = {"Gen": "Genesis", "Dan": "Daniel", "Ezra": "Ezra"}
+WEB_BOOK_CODES = {"Gen": "GEN", "Dan": "DAN", "Ezra": "EZR"}
+VERSE_RE = re.compile(r"^(Gen|Dan|Ezra)\.(\d+)\.(\d+)$")
+
+# Documented Biblical Aramaic ranges in Ezra (the royal correspondence
+# and decrees): Ezra 4:8-6:18 and 7:12-26. Everything else in Ezra is
+# Hebrew. Daniel's range is unchanged: 2:4b-7:28.
+EZRA_ARAMAIC_RANGES = (((4, 8), (6, 18)), ((7, 12), (7, 26)))
 WEB_LINE_RE = re.compile(r"^([A-Z0-9]{3}) (\d+):(\d+)[a-z]? (.*)$")
 
 def sha256_file(path: Path) -> str:
@@ -51,11 +60,25 @@ def _verse_language(book: str, chapter: int, verse: int) -> str:
     if book == "Dan":
         in_aramaic = (chapter == 2 and verse >= 4) or (3 <= chapter <= 6) or (chapter == 7 and verse <= 28)
         return "biblical_aramaic" if in_aramaic else "biblical_hebrew"
+    if book == "Ezra":
+        here = (chapter, verse)
+        in_aramaic = any(start <= here <= end for start, end in EZRA_ARAMAIC_RANGES)
+        return "biblical_aramaic" if in_aramaic else "biblical_hebrew"
     return "biblical_hebrew"
 
-def _partition(book: str, chapter: int) -> str:
+def _partition(book: str, chapter: int, language: str = "biblical_hebrew") -> str:
+    """Book-group partitions (AHAIET-008 remediation). Strategy:
+    Genesis chapters 1-25 train / 26-50 validation (unchanged);
+    Ezra (both languages) train — an independent book, so its Aramaic
+    sections give Biblical Aramaic real training material without
+    touching the held-out book; Daniel Hebrew validation; Daniel
+    Aramaic test (Daniel remains the held-out book for Aramaic).
+    No verse appears in more than one partition, and the recorded
+    leakage checks in dataset preparation still apply."""
     if book == "Dan":
-        return "test"
+        return "test" if language == "biblical_aramaic" else "validation"
+    if book == "Ezra":
+        return "train"
     return "train" if chapter <= 25 else "validation"
 
 def _strongs(lemma: str) -> str:
@@ -119,7 +142,7 @@ def parse_osis(path: Path, book: str) -> list[dict]:
             "translation_edition": TRANSLATION_EDITION,
             "license": SOURCE_LICENSE + "; " + ENGLISH_LICENSE,
             "provenance": f"morphhb OSIS file {path.name} (sha256 recorded in datasets manifest)",
-            "partition": _partition(book, chapter),
+            "partition": _partition(book, chapter, language),
             "words": words,
         })
     return passages
@@ -151,7 +174,7 @@ def build_corpus(osis_dir: Path, web_zip: Path | None, web_txt: Path | None) -> 
     seen: set[tuple] = set()
     report = {"files": {}, "verses_parsed": 0, "aligned_english": 0, "duplicates_skipped": 0,
               "validation_errors": [], "by_language": {}}
-    for book in ("Gen", "Dan"):
+    for book in ("Gen", "Dan", "Ezra"):
         path = osis_dir / f"{book}.xml"
         if not path.exists():
             report["validation_errors"].append(f"missing OSIS file: {path}")
@@ -162,7 +185,7 @@ def build_corpus(osis_dir: Path, web_zip: Path | None, web_txt: Path | None) -> 
             if not p["source_text"]:
                 report["validation_errors"].append(f"empty source: {p['reference']}")
                 continue
-            ref_m = re.match(r"^(Genesis|Daniel) (\d+):(\d+)$", p["reference"])
+            ref_m = re.match(r"^(Genesis|Daniel|Ezra) (\d+):(\d+)$", p["reference"])
             chapter, verse = int(ref_m.group(2)), int(ref_m.group(3))
             english = web.get((book, chapter, verse), "")
             p["english_text"] = english
@@ -185,6 +208,8 @@ def import_into_db(db_path: Path, passages: list[dict]) -> dict:
     try:
         conn.execute("DELETE FROM corpus_words WHERE passage_id IN (SELECT id FROM reference_passages WHERE source_edition=?)",
                      (SOURCE_EDITION,))
+        conn.execute("DELETE FROM passage_tokens WHERE passage_id IN (SELECT id FROM reference_passages WHERE source_edition=?)",
+                     (SOURCE_EDITION,))
         conn.execute("DELETE FROM reference_passages WHERE source_edition=?", (SOURCE_EDITION,))
         n_words = 0
         for p in passages:
@@ -203,6 +228,22 @@ def import_into_db(db_path: Path, passages: list[dict]) -> dict:
                     (p["id"], p["language"], i, w["surface"], normalize_nodiac(w["surface"]),
                      w["lemma"], w["strongs"], w["morph_code"], w["word_language"]))
                 n_words += 1
+            # Inverted token index for variant shortlisting
+            # (AHAIET-014): one row per distinct normalized token.
+            for tok in sorted(set(tokens(p["source_text"]))):
+                if tok:
+                    conn.execute(
+                        "INSERT INTO passage_tokens(passage_id,language_profile,token) VALUES (?,?,?)",
+                        (p["id"], p["language"], tok))
+        # Bump the durable corpus revision in THIS process's database
+        # write (AHAIET-013): API processes key their lookup cache by
+        # this revision, so this import invalidates their cached
+        # hits/misses without any in-process call.
+        row = conn.execute("SELECT value FROM corpus_meta WHERE key='revision'").fetchone()
+        revision = (int(row["value"]) if row else 0) + 1
+        conn.execute(
+            "INSERT INTO corpus_meta(key, value) VALUES ('revision', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(revision),))
         conn.commit()
     finally:
         conn.close()

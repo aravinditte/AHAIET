@@ -46,24 +46,63 @@ def engine_states(settings: Settings, profile: str) -> list[dict]:
     return states
 
 
-def select_engine(settings: Settings, profile: str) -> ArtifactResolution | None:
-    """Return the winning complete artifact resolution for a profile."""
+def _default_rank(r: ArtifactResolution) -> int:
+    return DEFAULT_ENGINE_ORDER.index(r.engine) if r.engine in DEFAULT_ENGINE_ORDER else 99
+
+
+def select_engines(settings: Settings, profile: str) -> list[ArtifactResolution]:
+    """Return ALL complete artifact resolutions for a profile, in the
+    order they should be tried (AHAIET-020): the translation service
+    walks this list within the SAME profile, recording each failure,
+    and never crosses to another profile silently.
+
+    Ordering (AHAIET-006 comparability): engines whose recorded scores
+    carry an evaluation-run record with an identical test-set sha256
+    AND identical metric signature are comparable and rank by score;
+    scores without a run record, or with a different test set /
+    signature, are never compared against them — those engines follow
+    in the documented default order, as do unevaluated engines."""
     complete: list[ArtifactResolution] = []
     for entry in translation_entries(settings, profile):
         resolution = model_artifacts.resolve_entry(entry)
         if resolution.ok:
             complete.append(resolution)
     if not complete:
-        return None
+        return []
+    comparable = [r for r in complete if r.chrf_pp is not None and r.evaluation_run]
+    if comparable:
+        # The comparison set is the largest group sharing one
+        # (test-set sha, metric signature); ties break toward the
+        # group holding the highest recorded score.
+        groups: dict[tuple, list[ArtifactResolution]] = {}
+        for r in comparable:
+            key = (r.evaluation_run.get("test_set_sha256"),
+                   r.evaluation_run.get("metric_signature"))
+            groups.setdefault(key, []).append(r)
+        best_key = max(groups, key=lambda k: (len(groups[k]),
+                                              max(x.chrf_pp or 0.0 for x in groups[k])))
+        ranked = sorted(groups[best_key],
+                        key=lambda r: (-(r.chrf_pp or 0.0), _default_rank(r)))
+        rest = [r for r in complete if r not in ranked]
+        rest.sort(key=_default_rank)
+        return ranked + rest
     evaluated = [r for r in complete if r.chrf_pp is not None]
-    if evaluated:
-        evaluated.sort(key=lambda r: (-(r.chrf_pp or 0.0),
-                                      DEFAULT_ENGINE_ORDER.index(r.engine)
-                                      if r.engine in DEFAULT_ENGINE_ORDER else 99))
-        return evaluated[0]
-    complete.sort(key=lambda r: DEFAULT_ENGINE_ORDER.index(r.engine)
-                  if r.engine in DEFAULT_ENGINE_ORDER else 99)
-    return complete[0]
+    if len(evaluated) == 1:
+        rest = [r for r in complete if r is not evaluated[0]]
+        rest.sort(key=_default_rank)
+        return [evaluated[0]] + rest
+    # Multiple recorded scores without run records are not comparable;
+    # fall back to the documented default order rather than comparing
+    # numbers that may come from different test sets or metrics.
+    complete.sort(key=_default_rank)
+    return complete
+
+
+def select_engine(settings: Settings, profile: str) -> ArtifactResolution | None:
+    """Return the winning complete artifact resolution for a profile
+    (the head of select_engines)."""
+    engines = select_engines(settings, profile)
+    return engines[0] if engines else None
 
 
 def per_profile_readiness(settings: Settings, corpus_by_language: dict | None = None) -> dict:

@@ -3,19 +3,32 @@ import React from "react";
 import type { UncertainSpan } from "@/types/api";
 
 function HighlightedRaw({ rawOcr, uncertain }: { rawOcr: string; uncertain: UncertainSpan[] }) {
-  // Mark low-confidence words by consuming the uncertain-span list in
-  // order, so repeated words are highlighted at the right occurrences.
-  const queue = uncertain.map((u) => u.text);
+  // AHAIET-028: highlight by token OCCURRENCE id, not by string
+  // search. Each non-whitespace token is numbered in reading order;
+  // a span marks exactly the occurrence its occurrence_id names, so a
+  // repeated word is highlighted only where OCR was actually unsure.
+  // Spans without an occurrence_id (older payloads) fall back to
+  // consuming matching texts in order.
+  const byOccurrence = new Map<string, UncertainSpan>();
+  const fallbackQueue: string[] = [];
+  for (const u of uncertain) {
+    if (u.occurrence_id) byOccurrence.set(u.occurrence_id, u);
+    else fallbackQueue.push(u.text);
+  }
   const parts: React.ReactNode[] = [];
+  let occurrence = 0;
   rawOcr.split(/(\s+)/).forEach((tok, i) => {
     if (!tok.trim()) { parts.push(<span key={i}>{tok}</span>); return; }
-    const idx = queue.indexOf(tok);
-    if (idx >= 0) {
-      queue.splice(idx, 1);
-      parts.push(<mark key={i} className="bg-yellow-300 text-black dark:bg-yellow-600" title="Low OCR confidence word">{tok}</mark>);
-    } else {
-      parts.push(<span key={i}>{tok}</span>);
+    const id = `w${occurrence}`;
+    occurrence += 1;
+    let marked = byOccurrence.has(id);
+    if (!marked && !byOccurrence.size) {
+      const idx = fallbackQueue.indexOf(tok);
+      if (idx >= 0) { fallbackQueue.splice(idx, 1); marked = true; }
     }
+    parts.push(marked
+      ? <mark key={i} data-occurrence-id={id} className="bg-yellow-300 text-black dark:bg-yellow-600" title="Low OCR confidence word">{tok}</mark>
+      : <span key={i}>{tok}</span>);
   });
   return <>{parts}</>;
 }

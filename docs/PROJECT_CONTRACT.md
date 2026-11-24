@@ -42,3 +42,26 @@ See docs/DATASETS.md. No invented scholarly corpus entries, ever.
 ## Naming and testing rules (owner)
 - Name work only: no stage/sequence numbering in any file, doc, comment, manifest, test name, or commit message.
 - The build assistant codes every case; test execution belongs to the developer. docs/VERIFICATION.md states what is coded, the commands, and the expected behaviour, and marks anything not yet run.
+
+## Remediation invariants (code review, 2026-11-24)
+
+- **Ambiguity is never verified.** A retrieval key that identifies
+  more than one passage — or a diacritic-insensitive key spanning
+  differing vocalized forms — returns candidates with reason
+  `ambiguous_match`, never a translation presented as verified.
+  `text_match` and `passage_identity_verified` are separate facts.
+- **Evaluation comparability.** A score exists only with its
+  evaluation-run record (test-set sha256, sample count, metric
+  signature, artifact sha256). Selection compares only identical
+  test-set + signature runs; stale scores are ignored and flagged; an
+  empty/below-minimum test partition is `insufficient_test_data` and
+  writes no selection.
+- **Job state machine.** /api/process jobs move only
+  queued -> running_ocr -> running_translation ->
+  completed | partial | failed | cancelled (plus `expired` for
+  TTL-expired terminal results). Every job ends in a terminal state;
+  there is no awaiting/non-terminal end state.
+- **Profile honesty.** Translation never silently crosses profiles:
+  fallback is ordered within one profile, and ambiguous profile
+  evidence without a user selection is a structured
+  `profile_choice_required` response.

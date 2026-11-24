@@ -57,5 +57,8 @@ export function buildJsonExport(s: ExportState): string {
 }
 export function downloadText(filename: string, text: string, type = "text/plain;charset=utf-8"): void {
   const blob = new Blob([text], { type }); const url = URL.createObjectURL(blob);
-  const a = document.createElement("a"); a.href = url; a.download = filename; a.click(); URL.revokeObjectURL(url);
+  const a = document.createElement("a"); a.href = url; a.download = filename; a.click();
+  // AHAIET-046: revoke after the download has had a tick to start —
+  // synchronous revocation can cancel the download in some browsers.
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }

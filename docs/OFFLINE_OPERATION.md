@@ -84,3 +84,15 @@ rule) — the script prints the steps; it does not execute them.
   that fetches at runtime.
 - Blocking the machine's network entirely is also safe for runtime
   use: every runtime feature works from local files and processes.
+
+## Opt-in real-pipeline acceptance test (AHAIET-007/030)
+
+`backend/tests/test_real_pipeline_acceptance.py` is the end-to-end
+proof for this document: with sockets blocked, it runs image upload ->
+OCR -> correction -> translation through the real API and asserts the
+lineage fields survive. It is marked `model_required` and **skips with
+the exact missing prerequisite** (Tesseract binary, heb traineddata, a
+resolved translation artifact or imported corpus) when the machine is
+not provisioned. The run itself is the developer's; until it has been
+run and recorded, the `offline_benchmark_passed` provisioning state
+(docs/PROVISIONING.md) is not claimed.

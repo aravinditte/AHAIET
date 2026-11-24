@@ -27,6 +27,20 @@ export default function Home() {
   const [status, setStatus] = React.useState<string>("");
   const [error, setError] = React.useState<string | null>(null);
   const [dark, setDark] = React.useState(false);
+  // AHAIET-027: in-flight request management. Every upload/OCR/
+  // translate call gets a monotonically increasing id and an
+  // AbortController; starting a new call aborts the previous one, and
+  // a completion whose id is no longer current is ignored.
+  const requestSeq = React.useRef(0);
+  const abortRef = React.useRef<AbortController | null>(null);
+  const beginRequest = () => {
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    requestSeq.current += 1;
+    return { id: requestSeq.current, signal: controller.signal };
+  };
+  const isCurrent = (id: number) => id === requestSeq.current;
 
   React.useEffect(() => { api.languages().then(setLanguages).catch(() => {}); }, []);
   React.useEffect(() => { api.scripts().then(setScriptRows).catch(() => {}); }, []);
@@ -38,27 +52,39 @@ export default function Home() {
   }, [file]);
 
   const onFile = async (f: File | null) => {
+    const req = beginRequest();
     setFile(f); setError(null); setUploadMeta(null); setRawOcr(""); setCorrected(""); setOcrResult(null); setTranslationResult(null);
     if (!f) return;
     setStatus("Uploading to backend for content validation…");
-    try { const meta = await api.upload(f); setUploadMeta(meta); setStatus("Image validated and stored by the backend."); }
-    catch (e) { setError(e instanceof ApiClientError ? e.message : String(e)); setStatus(""); }
+    try { const meta = await api.upload(f, req.signal); if (!isCurrent(req.id)) return; setUploadMeta(meta); setStatus("Image validated and stored by the backend."); }
+    catch (e) { if (!isCurrent(req.id)) return; setError(e instanceof ApiClientError ? e.message : String(e)); setStatus(""); }
   };
   const extract = async () => {
     if (!uploadMeta) { setError("Upload an image first."); return; }
-    setError(null); setStatus("Running OCR…");
+    const req = beginRequest();
+    setError(null); setStatus("Running OCR…"); setTranslationResult(null);
     try {
-      const r = await api.ocr(uploadMeta.id, language || undefined, preprocessing, ocrEngine, scriptProfile);
+      const r = await api.ocr(uploadMeta.id, language || undefined, preprocessing, ocrEngine, scriptProfile, req.signal);
+      if (!isCurrent(req.id)) return;
       setOcrResult(r); setRawOcr(r.original_ocr_text); setCorrected(r.original_ocr_text);
       setStatus(`OCR complete (${r.ocr_engine}, profile ${r.ocr_profile}, ${r.word_count} words). Review and correct the text, then translate.`);
     }
-    catch (e) { setError(e instanceof ApiClientError ? e.message : String(e)); setStatus(""); }
+    catch (e) { if (!isCurrent(req.id)) return; setError(e instanceof ApiClientError ? e.message : String(e)); setStatus(""); }
   };
   const translate = async () => {
     if (!corrected.trim()) { setError("There is no corrected source text to translate."); return; }
+    const req = beginRequest();
     setError(null); setStatus("Checking the verified corpus and local models…");
     try {
-      const r = await api.translate(corrected, language || undefined);
+      // AHAIET-026: raw OCR text travels immutably alongside the
+      // corrected text, the selected profile, and the OCR request id.
+      const r = await api.translate({
+        originalOcrText: ocrResult ? rawOcr : null,
+        correctedSourceText: corrected,
+        sourceLanguage: language || undefined,
+        ocrRequestId: ocrResult?.request_id ?? null,
+      }, req.signal);
+      if (!isCurrent(req.id)) return;
       setTranslationResult(r);
       setStatus(r.status === "partial"
         ? "Partial translation: some lines translated, some unavailable — see the per-line breakdown."
@@ -66,9 +92,17 @@ export default function Home() {
         ? "Verified corpus match found — the cited edition's English is shown with its provenance."
         : "Translation complete.");
     }
-    catch (e) { setTranslationResult(null); setError(e instanceof ApiClientError ? e.message : String(e)); setStatus(""); }
+    catch (e) { if (!isCurrent(req.id)) return; setTranslationResult(null); setError(e instanceof ApiClientError ? e.message : String(e)); setStatus(""); }
   };
-  const reset = () => { setFile(null); setUploadMeta(null); setRawOcr(""); setCorrected(""); setOcrResult(null); setTranslationResult(null); setError(null); setStatus(""); setLanguage(""); };
+  // AHAIET-027: any upstream change (corrected text, language, script
+  // profile, preprocessing) invalidates a displayed translation — a
+  // stale result must never sit under changed inputs.
+  const invalidateTranslation = () => setTranslationResult(null);
+  const onCorrected = (v: string) => { setCorrected(v); invalidateTranslation(); };
+  const onLanguage = (v: string) => { setLanguage(v); invalidateTranslation(); };
+  const onPreprocessing = (v: string) => { setPreprocessing(v); invalidateTranslation(); };
+  const onScriptProfile = (v: string) => { setScriptProfile(v); invalidateTranslation(); };
+  const reset = () => { abortRef.current?.abort(); requestSeq.current += 1; setFile(null); setUploadMeta(null); setRawOcr(""); setCorrected(""); setOcrResult(null); setTranslationResult(null); setError(null); setStatus(""); setLanguage(""); };
   const preview = uploadMeta ? api.uploadUrl(uploadMeta.id) : localPreview;
   const translation = translationResult?.english_translation ?? "";
 
@@ -86,10 +120,10 @@ export default function Home() {
       <UploadPanel file={file} previewUrl={preview} onFile={onFile} uploadMeta={uploadMeta} />
       <section aria-labelledby="proc-h" className="rounded border p-4">
         <h2 id="proc-h" className="font-semibold">Step 2 — Language &amp; extraction</h2>
-        <div className="mt-2"><LanguageSelector languages={languages} value={language} onChange={setLanguage} /></div>
+        <div className="mt-2"><LanguageSelector languages={languages} value={language} onChange={onLanguage} /></div>
         <div className="mt-3">
           <label htmlFor="preproc" className="font-semibold">Preprocessing profile</label>
-          <select id="preproc" value={preprocessing} onChange={(e) => setPreprocessing(e.target.value)} className="ml-2 rounded border p-1 dark:bg-neutral-800">
+          <select id="preproc" value={preprocessing} onChange={(e) => onPreprocessing(e.target.value)} className="ml-2 rounded border p-1 dark:bg-neutral-800">
             <option value="conservative">Conservative (preserves small marks; no deskew/median)</option>
             <option value="enhanced">Enhanced (deskew + adaptive contrast; median only when safe)</option>
           </select>
@@ -103,7 +137,7 @@ export default function Home() {
             <option value="kraken">Kraken (historical scripts, when supported)</option>
           </select>
           <label htmlFor="script-profile" className="ml-4 font-semibold">Script</label>
-          <select id="script-profile" value={scriptProfile} onChange={(e) => setScriptProfile(e.target.value)} className="ml-2 rounded border p-1 dark:bg-neutral-800">
+          <select id="script-profile" value={scriptProfile} onChange={(e) => onScriptProfile(e.target.value)} className="ml-2 rounded border p-1 dark:bg-neutral-800">
             {scriptRows.length ? scriptRows.map((s) => (
               <option key={s.id} value={s.id}>{s.name} — {s.status}</option>
             )) : <option value="hebrew_square">Hebrew square script</option>}
@@ -112,7 +146,7 @@ export default function Home() {
         </div>
         <button type="button" onClick={extract} disabled={!uploadMeta} data-testid="ocr-run" className="mt-3 rounded bg-blue-700 px-4 py-2 text-white disabled:opacity-40">Process / Extract Text (OCR)</button>
       </section>
-      <SourceEditor rawOcr={rawOcr} corrected={corrected} onCorrected={setCorrected}
+      <SourceEditor rawOcr={rawOcr} corrected={corrected} onCorrected={onCorrected}
         uncertainSpans={ocrResult?.uncertain_spans ?? []} meanConfidence={ocrResult?.mean_confidence ?? null}
         ocrNote={ocrResult ? `OCR profile: ${ocrResult.ocr_profile}${ocrResult.ocr_lang ? ` (${ocrResult.ocr_lang} traineddata)` : ""}. ${ocrResult.ocr_profile_note}` : null} />
       <section aria-labelledby="trbtn-h" className="rounded border p-4">

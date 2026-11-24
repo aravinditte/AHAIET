@@ -13,13 +13,39 @@ export const api = {
   base: BASE,
   async capabilities(): Promise<Capabilities> { return parse(await fetch(`${BASE}/api/capabilities`)); },
   async languages(): Promise<LanguageProfile[]> { const d = await parse<{ languages: LanguageProfile[] }>(await fetch(`${BASE}/api/languages`)); return d.languages; },
-  async upload(file: File): Promise<UploadMeta> { const fd = new FormData(); fd.append("file", file); return parse(await fetch(`${BASE}/api/uploads`, { method: "POST", body: fd })); },
+  async upload(file: File, signal?: AbortSignal): Promise<UploadMeta> { const fd = new FormData(); fd.append("file", file); return parse(await fetch(`${BASE}/api/uploads`, { method: "POST", body: fd, signal })); },
   uploadUrl(id: string): string { return `${BASE}/api/uploads/${id}`; },
-  async ocr(uploadId: string, languageProfile?: string, preprocessingProfile = "conservative", engine = "auto", scriptProfile = "hebrew_square"): Promise<OcrResult> {
-    return parse(await fetch(`${BASE}/api/ocr`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ upload_id: uploadId, language_profile: languageProfile ?? null, preprocessing_profile: preprocessingProfile, engine, script_profile: scriptProfile }) }));
+  async ocr(uploadId: string, languageProfile?: string, preprocessingProfile = "conservative", engine = "auto", scriptProfile = "hebrew_square", signal?: AbortSignal): Promise<OcrResult> {
+    return parse(await fetch(`${BASE}/api/ocr`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ upload_id: uploadId, language_profile: languageProfile ?? null, preprocessing_profile: preprocessingProfile, engine, script_profile: scriptProfile }), signal }));
   },
   async scripts(): Promise<ScriptSupport[]> { const d = await parse<{ scripts: ScriptSupport[] }>(await fetch(`${BASE}/api/scripts`)); return d.scripts; },
-  async translate(text: string, sourceLanguage?: string): Promise<TranslationResult> {
-    return parse(await fetch(`${BASE}/api/translate`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, source_language: sourceLanguage ?? null }) }));
+  // AHAIET-026: raw OCR text (immutable), corrected text, the selected
+  // profile, and the OCR request id travel as separate fields.
+  async translate(args: { originalOcrText?: string | null; correctedSourceText: string; sourceLanguage?: string; ocrRequestId?: string | null }, signal?: AbortSignal): Promise<TranslationResult> {
+    return parse(await fetch(`${BASE}/api/translate`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: args.correctedSourceText, corrected_source_text: args.correctedSourceText, original_ocr_text: args.originalOcrText ?? null, ocr_request_id: args.ocrRequestId ?? null, source_language: args.sourceLanguage ?? null }), signal }));
+  },
+  // AHAIET-009: asynchronous process jobs — submit (202), poll, cancel.
+  async process(uploadId: string, languageProfile?: string, preprocessingProfile = "conservative", engine = "auto", scriptProfile = "hebrew_square"): Promise<JobView> {
+    return parse(await fetch(`${BASE}/api/process`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ upload_id: uploadId, language_profile: languageProfile ?? null, preprocessing_profile: preprocessingProfile, engine, script_profile: scriptProfile }) }));
+  },
+  async job(jobId: string): Promise<JobView & Record<string, unknown>> {
+    return parse(await fetch(`${BASE}/api/jobs/${jobId}`));
+  },
+  async jobResult(jobId: string): Promise<JobView> {
+    return parse(await fetch(`${BASE}/api/jobs/${jobId}/result`));
+  },
+  async cancelJob(jobId: string): Promise<JobView> {
+    return parse(await fetch(`${BASE}/api/jobs/${jobId}/cancel`, { method: "POST" }));
+  },
+  async pollJob(jobId: string, onUpdate?: (j: JobView & Record<string, unknown>) => void, intervalMs = 500, timeoutMs = 600_000): Promise<JobView> {
+    const terminal = new Set(["completed", "partial", "failed", "cancelled", "expired"]);
+    const start = Date.now();
+    for (;;) {
+      const j = await api.job(jobId);
+      onUpdate?.(j);
+      if (terminal.has(j.status)) return api.jobResult(jobId);
+      if (Date.now() - start > timeoutMs) throw new ApiClientError("job_poll_timeout", "Timed out waiting for the background job.");
+      await new Promise((r) => setTimeout(r, intervalMs));
+    }
   },
 };

@@ -17,9 +17,9 @@ import shutil
 import subprocess
 
 from app.core.config import Settings
-from app.core.errors import AppError, UnavailableError
+from app.core.errors import AppError, UnavailableError, sanitize_detail
 from app.services.language.tokenize import detokenize_target, tokenize_source_line
-from . import model_artifacts
+from . import decoder_output, model_artifacts
 from .model_artifacts import ArtifactResolution
 
 
@@ -27,7 +27,13 @@ def resolve(settings: Settings, entry: dict) -> ArtifactResolution:
     return model_artifacts.resolve_entry(entry)
 
 
-def run(entry: dict, text: str, settings: Settings) -> dict:
+def _timeout(settings: Settings | None, timeout_s: float | None) -> float:
+    if timeout_s is not None:
+        return timeout_s
+    return settings.translation_timeout_s if settings else 120.0
+
+
+def run(entry: dict, text: str, settings: Settings, timeout_s: float | None = None) -> dict:
     resolution = model_artifacts.resolve_entry(entry)
     if not resolution.ok:
         raise UnavailableError(
@@ -47,17 +53,59 @@ def run(entry: dict, text: str, settings: Settings) -> dict:
     try:
         proc = subprocess.run([exe, "-f", str(ini)], input=tokenized + "\n",
                               capture_output=True, text=True,
-                              timeout=settings.translation_timeout_s if settings else 120.0)
+                              timeout=_timeout(settings, timeout_s))
     except subprocess.TimeoutExpired:
         raise AppError(504, "translation_timeout",
                        "The Moses decoder exceeded the configured translation timeout.",
-                       f"timeout={settings.translation_timeout_s if settings else 120.0}s")
+                       f"timeout={_timeout(settings, timeout_s)}s")
+    except OSError as e:
+        raise UnavailableError("moses_failed", "The Moses decoder could not be started.",
+                               sanitize_detail(str(e)))
     if proc.returncode != 0:
         raise UnavailableError("moses_failed", "The Moses decoder exited with an error.",
-                               (proc.stderr or "")[:500])
-    english = detokenize_target(proc.stdout.strip())
+                               sanitize_detail(proc.stderr or ""))
+    english = detokenize_target(decoder_output.validate_single(proc.stdout, "Moses"))
     coverage = model_artifacts.compute_coverage(text, resolution)
     return _result(resolution, english, coverage)
+
+
+def run_batch(entry: dict, texts: list[str], settings: Settings,
+              timeout_s: float | None = None) -> list[dict]:
+    """Decode several segments in ONE decoder invocation (AHAIET-035):
+    Moses reads stdin line by line and writes one line per input line.
+    Line-count alignment is validated strictly; any misalignment fails
+    the whole batch rather than shifting translations across segments."""
+    resolution = model_artifacts.resolve_entry(entry)
+    if not resolution.ok:
+        raise UnavailableError(
+            "moses_unavailable",
+            "The Moses SMT artifact for this language profile is incomplete, so no translation was produced.",
+            "Missing: " + "; ".join(resolution.missing))
+    exe = settings.moses_cmd if settings and settings.moses_cmd else "moses"
+    if not _is_executable(exe):
+        raise UnavailableError("moses_unavailable",
+                               "The Moses decoder binary was not found, so no translation was produced.",
+                               f"Looked for '{exe}'.")
+    ini = model_artifacts.card_file(resolution, ("config",), ("moses.ini",))
+    payload = "\n".join(tokenize_source_line(t) for t in texts) + "\n"
+    try:
+        proc = subprocess.run([exe, "-f", str(ini)], input=payload,
+                              capture_output=True, text=True,
+                              timeout=_timeout(settings, timeout_s))
+    except subprocess.TimeoutExpired:
+        raise AppError(504, "translation_timeout",
+                       "The Moses decoder exceeded the configured translation timeout.",
+                       f"timeout={_timeout(settings, timeout_s)}s")
+    except OSError as e:
+        raise UnavailableError("moses_failed", "The Moses decoder could not be started.",
+                               sanitize_detail(str(e)))
+    if proc.returncode != 0:
+        raise UnavailableError("moses_failed", "The Moses decoder exited with an error.",
+                               sanitize_detail(proc.stderr or ""))
+    lines = decoder_output.validate_batch(proc.stdout, len(texts), "Moses")
+    return [_result(resolution, detokenize_target(line),
+                    model_artifacts.compute_coverage(text, resolution))
+            for line, text in zip(lines, texts)]
 
 
 def _is_executable(exe: str) -> bool:

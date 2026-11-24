@@ -11,9 +11,9 @@ bytes and returns a derived image plus a step report. Two profiles:
   variance), plus stronger adaptive contrast.
 """
 from __future__ import annotations
-import hashlib, io, math
+import hashlib, io, math, warnings
 import numpy as np
-from PIL import Image, ImageOps
+from PIL import Image, ImageFilter, ImageOps
 from app.core.config import Settings
 from app.core.errors import ValidationAppError
 
@@ -29,16 +29,32 @@ def validate_and_decode(data: bytes, settings: Settings) -> dict:
         raise ValidationAppError("upload_too_large", f"File exceeds limit of {settings.upload_max_bytes} bytes.", f"got {len(data)} bytes")
     Image.MAX_IMAGE_PIXELS = settings.upload_max_pixels
     try:
-        with Image.open(io.BytesIO(data)) as probe:
-            fmt = probe.format
-            if fmt not in ALLOWED_FORMATS:
-                raise ValidationAppError("unsupported_format", f"Unsupported image format: {fmt}", "Allowed: PNG, JPEG, TIFF, WEBP, BMP")
-            width, height = probe.size
-            if width * height > settings.upload_max_pixels:
-                raise ValidationAppError("image_too_many_pixels", f"Image has {width*height} pixels, limit is {settings.upload_max_pixels}.")
-            probe.verify()
-        with Image.open(io.BytesIO(data)) as img:
-            width, height = img.size; fmt = img.format
+        with warnings.catch_warnings():
+            # Pillow decompression warnings are treated as errors
+            # (AHAIET-024): a bomb-shaped payload must fail here, not
+            # midway through preprocessing.
+            warnings.simplefilter("error")
+            with Image.open(io.BytesIO(data)) as probe:
+                fmt = probe.format
+                if fmt not in ALLOWED_FORMATS:
+                    raise ValidationAppError("unsupported_format", f"Unsupported image format: {fmt}", "Allowed: PNG, JPEG, TIFF, WEBP, BMP")
+                width, height = probe.size
+                if width * height > settings.upload_max_pixels:
+                    raise ValidationAppError("image_too_many_pixels", f"Image has {width*height} pixels, limit is {settings.upload_max_pixels}.")
+                # The single-image pipeline accepts exactly one frame:
+                # multipage TIFFs and animations are rejected rather
+                # than silently read at frame 0 (AHAIET-024).
+                frames = getattr(probe, "n_frames", 1)
+                if frames and frames > 1:
+                    raise ValidationAppError("multipage_image",
+                        f"Image has {frames} frames/pages; the single-image pipeline accepts one.",
+                        "Export the single page you want recognised and upload that.")
+                probe.verify()
+            with Image.open(io.BytesIO(data)) as img:
+                # Fully decode the second open as well (AHAIET-024):
+                # format/size alone do not prove the payload decodes.
+                img.load()
+                width, height = img.size; fmt = img.format
     except ValidationAppError:
         raise
     except Image.DecompressionBombError as e:
@@ -69,9 +85,16 @@ def _clahe_like(gray: np.ndarray, clip: float = 2.0, tiles: int = 8) -> np.ndarr
             out[y0:y1, x0:x1] = cdf[tile].astype(np.uint8)
     return out
 
-def _projection_score(binary: np.ndarray, angle: float) -> float:
-    """Variance of the horizontal projection after rotating by `angle`."""
-    img = Image.fromarray(binary)
+def _projection_score(darkness: np.ndarray, angle: float) -> float:
+    """Variance of the horizontal projection after rotating by `angle`.
+
+    The input is a DARKNESS map (0 = paper, 255 = ink) of the detected
+    text region only, and rotation fills with 0 (paper) — consistent
+    with dark-on-light pages (AHAIET-039). Black fill on an ink map
+    would inject artificial ink rows/columns and skew the score; page
+    borders outside the text region are excluded by the mask the
+    caller builds."""
+    img = Image.fromarray(darkness)
     rot = img.rotate(angle, resample=Image.BILINEAR, fillcolor=0)
     arr = np.asarray(rot, dtype=np.float64)
     proj = arr.sum(axis=1)
@@ -82,9 +105,18 @@ def _deskew(gray_img: Image.Image, max_angle: float = 3.0, step: float = 0.5) ->
     angle is then applied to the full-resolution image."""
     small = gray_img.copy()
     small.thumbnail((800, 800))
-    binary = (np.asarray(small) < 128).astype(np.uint8) * 255
-    if binary.sum() == 0:
+    gray_arr = np.asarray(small)
+    ink = gray_arr < 128
+    if not ink.any():
         return gray_img, 0.0
+    # Text-region mask (AHAIET-039): crop to the bounding box of ink
+    # pixels (with a small margin) so page borders and marginal marks
+    # outside the text block do not drive the score.
+    rows = np.where(ink.any(axis=1))[0]
+    cols = np.where(ink.any(axis=0))[0]
+    y0, y1 = max(0, rows.min() - 4), min(ink.shape[0], rows.max() + 5)
+    x0, x1 = max(0, cols.min() - 4), min(ink.shape[1], cols.max() + 5)
+    binary = (ink[y0:y1, x0:x1]).astype(np.uint8) * 255
     best_angle, best_score = 0.0, _projection_score(binary, 0.0)
     n = int(max_angle / step)
     for i in range(-n, n + 1):
@@ -99,11 +131,13 @@ def _deskew(gray_img: Image.Image, max_angle: float = 3.0, step: float = 0.5) ->
     return gray_img.rotate(best_angle, resample=Image.BICUBIC, fillcolor=255), best_angle
 
 def _median3(gray: np.ndarray) -> np.ndarray:
-    """3x3 median via NumPy padding (conservative noise reduction)."""
-    p = np.pad(gray, 1, mode="edge")
-    windows = np.stack([p[i:i + gray.shape[0], j:j + gray.shape[1]]
-                          for i in range(3) for j in range(3)])
-    return np.median(windows, axis=0).astype(np.uint8)
+    """3x3 median via Pillow's native MedianFilter (AHAIET-023).
+
+    The previous implementation stacked nine full-size arrays plus a
+    median buffer — at the 40 MP pixel limit that is hundreds of MB
+    of intermediates. The native filter processes the image without
+    materialising the stack."""
+    return np.asarray(Image.fromarray(gray).filter(ImageFilter.MedianFilter(3)))
 
 def preprocess_image(data: bytes, profile: str = "conservative",
                      settings: Settings | None = None) -> tuple[bytes, dict]:
@@ -117,9 +151,35 @@ def preprocess_image(data: bytes, profile: str = "conservative",
     with Image.open(io.BytesIO(data)) as src:
         src.load()
         original_size = src.size
+        # Decoded + intermediate byte budget (AHAIET-023): estimate the
+        # decoded frame plus the pipeline's working copies and refuse
+        # before any heavy step when the budget would be exceeded.
+        if settings is not None:
+            decoded = original_size[0] * original_size[1] * 4
+            estimated = decoded * 6
+            if estimated > settings.preprocessing_max_bytes:
+                raise ValidationAppError(
+                    "preprocessing_budget_exceeded",
+                    f"Decoded image would need about {estimated} bytes of working memory; "
+                    f"the configured budget is {settings.preprocessing_max_bytes} bytes "
+                    "(AHAIET_PREPROCESSING_MAX_BYTES).",
+                    "Reduce the image resolution or raise the budget in configuration.")
+        # Orientation (AHAIET-037): attempted always; applied only when
+        # an EXIF orientation tag exists AND transposing changed the
+        # image. The two facts are reported separately.
+        try:
+            orientation_tag = src.getexif().get(274)
+        except Exception:
+            orientation_tag = None
         img = ImageOps.exif_transpose(src)
-        steps.append({"step": "exif_orientation", "applied": img.size != original_size or True,
-                      "note": "EXIF orientation applied via ImageOps.exif_transpose"})
+        orientation_applied = orientation_tag not in (None, 1) and (
+            img.size != original_size or orientation_tag in (2, 4, 5, 7))
+        steps.append({"step": "exif_orientation", "attempted": True,
+                      "applied": bool(orientation_applied),
+                      "exif_orientation": orientation_tag,
+                      "note": "EXIF orientation applied via ImageOps.exif_transpose"
+                              if orientation_applied else
+                              "no orientation transform was required by the EXIF data"})
         img = img.convert("L")
         steps.append({"step": "grayscale", "applied": True})
         arr = np.asarray(img)
@@ -152,15 +212,23 @@ def preprocess_image(data: bytes, profile: str = "conservative",
             steps.append({"step": "deskew", "applied": False, "note": "not in conservative profile"})
             steps.append({"step": "median_noise_reduction", "applied": False,
                           "note": "not in conservative profile (small marks preserved)"})
-        # Upscale small images toward the OCR target DPI scale.
+        # Pixel upscale for small images (AHAIET-038): this changes
+        # pixel dimensions only. It does NOT recover source detail and
+        # does NOT establish a scan DPI; the step is named and reported
+        # accordingly (the old label "upscale_to_target_dpi" was a
+        # report label only — the rename is documented in docs/OCR.md).
         w, h = img.size
         scale = 1.0
         if max(w, h) < 2000:
             scale = min(3.0, 2000 / max(w, h))
             img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
-        steps.append({"step": "upscale_to_target_dpi", "applied": scale != 1.0,
-                      "scale": round(scale, 3), "target_dpi": TARGET_DPI,
-                      "size_after": list(img.size)})
+        source_dpi = src.info.get("dpi")
+        steps.append({"step": "pixel_upscale", "applied": scale != 1.0,
+                      "scale": round(scale, 3), "scaler": "LANCZOS",
+                      "size_before": [w, h], "size_after": list(img.size),
+                      "source_dpi": list(source_dpi) if source_dpi else None,
+                      "note": "pixel dimensions increased for the OCR engine; no detail "
+                              "is recovered and no scan DPI is claimed"})
         buf = io.BytesIO()
         img.save(buf, format="PNG", dpi=(TARGET_DPI, TARGET_DPI))
         derived = buf.getvalue()

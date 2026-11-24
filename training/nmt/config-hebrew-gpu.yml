@@ -1,0 +1,47 @@
+# Marian NMT training configuration — Biblical Hebrew -> English (GPU variant).
+#
+# Optional alternative to config-hebrew.yml, selected with
+# train_nmt.py --config-variant gpu. Everything except device/precision
+# settings matches the CPU configuration so results stay comparable.
+# A GPU is never required: the CPU configuration is the supported path.
+
+type: transformer
+model: {{MODEL_PATH}}
+vocabs:
+  - {{VOCAB_SPM}}
+  - {{VOCAB_SPM}}
+train-sets:
+  - {{TRAIN_SRC}}
+  - {{TRAIN_TGT}}
+valid-sets:
+  - {{VALID_SRC}}
+  - {{VALID_TGT}}
+valid-metrics:
+  - cross-entropy
+  - perplexity
+  - bleu
+valid-mini-batch: 32
+dim-vocab: {{VOCAB_SIZE}}
+dim-emb: 256
+dim-model: 256
+enc-type: transformer
+enc-depth: 3
+dec-depth: 3
+transformer-heads: 4
+transformer-dim-ffn: 512
+transformer-dropout: 0.1
+dropout: 0.1
+label-smoothing: 0.1
+mini-batch: 32
+maxi-batch: 1000
+max-length: 120
+early-stopping: 10
+valid-freq: 100
+save-freq: 100
+disp-freq: 20
+seed: {{SEED}}
+devices:
+  - 0
+workspace: 4096
+log: {{LOG_PATH}}
+{{PRETRAINED_LINE}}

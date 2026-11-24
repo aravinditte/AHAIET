@@ -31,6 +31,14 @@ class TranslationResponse(BaseModel):
     corrected_source_text: str | None = None
     english_translation: str | None = None
     translation_method: str | None = None
+    # Additive fields populated when a trained local model produced the
+    # output (engine actually used, its recorded version and artifact
+    # hash, and word-level source coverage incl. OOV words). They stay
+    # null for verified_reference responses, whose shape is unchanged.
+    engine: str | None = None
+    model_version: str | None = None
+    artifact_sha256: str | None = None
+    coverage: dict | None = None
     source_references: list = Field(default_factory=list)
     uncertain_spans: list = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)

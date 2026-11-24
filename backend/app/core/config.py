@@ -25,6 +25,11 @@ class Settings:
     tessdata_prefix: Path | None = None
     ocr_confidence_threshold: float = 60.0
     ocr_psm: int = 6
+    # Trained translation model inference (Moses SMT / Marian NMT). The
+    # binaries are locally installed tools; runtime never needs WSL2.
+    moses_cmd: str = "moses"
+    marian_decoder_cmd: str = "marian-decoder"
+    translation_timeout_s: float = 120.0
     cors_origins: tuple[str, ...] = ("http://localhost:3000", "http://127.0.0.1:3000")
 
     @classmethod
@@ -44,6 +49,9 @@ class Settings:
             tessdata_prefix=Path(tessdata) if tessdata else None,
             ocr_confidence_threshold=float(os.getenv("AHAIET_OCR_CONF_THRESHOLD", "60")),
             ocr_psm=_int_env("AHAIET_OCR_PSM", 6),
+            moses_cmd=os.getenv("AHAIET_MOSES_CMD", "moses"),
+            marian_decoder_cmd=os.getenv("AHAIET_MARIAN_DECODER_CMD", "marian-decoder"),
+            translation_timeout_s=float(os.getenv("AHAIET_TRANSLATION_TIMEOUT_S", "120")),
         )
 
 settings = Settings.from_env()

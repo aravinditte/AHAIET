@@ -100,7 +100,7 @@ export default function Home() {
       {status && <p role="status" className="rounded border p-2">{status}</p>}
       {error && <p role="alert" className="rounded border border-red-500 p-2">{error}</p>}
       <div className="flex flex-wrap items-center gap-3">
-        <ExportButtons state={{ rawOcrText: rawOcr, correctedSourceText: corrected, englishTranslation: translation, languageProfile: language || null, uploadId: uploadMeta?.id ?? null, translationMethod: translationResult?.translation_method ?? null, sourceReferences: translationResult?.source_references ?? [] }} />
+        <ExportButtons state={{ rawOcrText: rawOcr, correctedSourceText: corrected, englishTranslation: translation, languageProfile: language || null, uploadId: uploadMeta?.id ?? null, translationMethod: translationResult?.translation_method ?? null, sourceReferences: translationResult?.source_references ?? [], engine: translationResult?.engine ?? null, modelVersion: translationResult?.model_version ?? null, artifactSha256: translationResult?.artifact_sha256 ?? null, coverage: translationResult?.coverage ?? null }} />
         <button type="button" onClick={reset} className="rounded border px-3 py-1">Clear / reset</button>
       </div>
     </main>

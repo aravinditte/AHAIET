@@ -15,6 +15,21 @@ describe("export formatting", () => {
     expect(txt.indexOf("raw")).toBeLessThan(txt.indexOf("fixed"));
     expect(txt).toContain("SECTION B");
   });
+  it("includes trained-model engine fields in TXT and JSON exports when present", () => {
+    const s = { ...base, englishTranslation: "MOSES-OUT text", translationMethod: "moses",
+      engine: "moses", modelVersion: "moses-smt-hebrew-abcd1234",
+      artifactSha256: "f".repeat(64),
+      coverage: { source_tokens: 4, known_tokens: 3, coverage_ratio: 0.75, oov_words: ["מלך"] } };
+    const parsed = JSON.parse(buildJsonExport(s));
+    expect(parsed.engine).toBe("moses");
+    expect(parsed.model_version).toBe("moses-smt-hebrew-abcd1234");
+    expect(parsed.artifact_sha256).toBe("f".repeat(64));
+    expect(parsed.coverage.oov_words).toEqual(["מלך"]);
+    const txt = buildCombinedTxt(s);
+    expect(txt).toContain("Engine: moses");
+    expect(txt).toContain("Model version: moses-smt-hebrew-abcd1234");
+    expect(txt).toContain("Source-token coverage: 3/4 (75%)");
+  });
   it("includes verified-reference citation and match fields when present", () => {
     const ref: SourceReference = { passage_id: "morphhb-gen-1-1", reference: "Genesis 1:1", book: "Genesis", language_profile: "biblical_hebrew", match_type: "exact", source_edition: "WLC via morphhb", translation_edition: "World English Bible (WEB)", license: "Public Domain", provenance: "morphhb OSIS Gen.xml", source_text: HEBREW, english_text: "In the beginning" };
     const s = { ...base, englishTranslation: "In the beginning", translationMethod: "verified_reference", sourceReferences: [ref] };

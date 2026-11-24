@@ -1,0 +1,57 @@
+# Marian NMT training configuration — Biblical Aramaic -> English (CPU).
+#
+# Template: training/nmt/train_nmt.py substitutes the {{PLACEHOLDERS}}
+# and writes the runnable copy into training/nmt/work/aramaic/.
+#
+# IMPORTANT, stated plainly: under the recorded corpus split strategy
+# every Aramaic passage sits in the held-out test partition, so this
+# profile currently has no training data and train_nmt.py will write a
+# not-ready report and stop before training (the data gate). This config
+# exists so the profile is ready the moment a training split exists —
+# it is not evidence that an Aramaic neural model can or should be
+# trained on the present corpus. A model trained on a very small
+# Aramaic corpus would not be expected to generalise to unseen
+# historical documents.
+#
+# Vocabulary: one joint SentencePiece model for both sides (see the
+# Hebrew configuration for the rationale).
+
+type: transformer
+model: {{MODEL_PATH}}
+vocabs:
+  - {{VOCAB_SPM}}
+  - {{VOCAB_SPM}}
+train-sets:
+  - {{TRAIN_SRC}}
+  - {{TRAIN_TGT}}
+valid-sets:
+  - {{VALID_SRC}}
+  - {{VALID_TGT}}
+valid-metrics:
+  - cross-entropy
+  - perplexity
+  - bleu
+valid-mini-batch: 16
+dim-vocab: {{VOCAB_SIZE}}
+dim-emb: 256
+dim-model: 256
+enc-type: transformer
+enc-depth: 3
+dec-depth: 3
+transformer-heads: 4
+transformer-dim-ffn: 512
+transformer-dropout: 0.1
+dropout: 0.1
+label-smoothing: 0.1
+mini-batch: 16
+maxi-batch: 100
+max-length: 120
+early-stopping: 10
+valid-freq: 100
+save-freq: 100
+disp-freq: 20
+seed: {{SEED}}
+workspace: 1024
+cpu-threads: 0
+log: {{LOG_PATH}}
+{{PRETRAINED_LINE}}

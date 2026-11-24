@@ -1,1 +1,274 @@
-{"generated_for":"OCR and corpus retrieval work. A manifest entry is NOT evidence a model exists; readiness is checked live by /api/capabilities (binary on disk / traineddata present / corpus imported).","models":[{"checksum":null,"engine":"tesseract","id":"tesseract-heb","kind":"ocr","language_profile":null,"notes":"The heb (and eng) traineddata files were downloaded on 2026-11-24. The tesseract BINARY is not provisioned on the build machine: 'apt-get download tesseract-ocr ...' failed with 'Unable to locate package' against stale package lists, and a subsequent 'apt-get update' did not complete. OCR therefore remains unavailable until the binary is installed (scripts/provision-ocr.ps1 / docs/OCR.md). Used for BOTH biblical_hebrew and biblical_aramaic profiles (Hebrew script); Syriac traineddata is never used for Hebrew-script Aramaic.","path":null,"status":"traineddata_downloaded_binary_missing","traineddata":{"also_downloaded":{"lang":"eng","sha256":"daa0c97d651c19fba3b25e81317cd697e9908c8208090c94c3905381c23fc047"},"lang":"heb","license":"Apache-2.0 (tessdata)","local_location":"outside the repository (developer tools tessdata directory, referenced via TESSDATA_PREFIX)","sha256":"7da6ea6b7a2620ec8e8b41de2967a13d429635a56657a0b30b622501a573d3e1","url":"https://raw.githubusercontent.com/tesseract-ocr/tessdata/main/heb.traineddata"},"version":null},{"checksum":null,"engine":"kraken","id":"kraken-historical-hebrew","kind":"ocr","language_profile":null,"notes":"No Kraken model has been trained or downloaded; the adapter performs an honest import/model check only.","path":null,"status":"not_provisioned","version":null},{"checksum":null,"engine":"moses","id":"moses-biblical-hebrew-en","kind":"translation","language_profile":"biblical_hebrew","notes":"No Moses phrase table has been trained.","path":null,"status":"not_provisioned","version":null},{"checksum":null,"engine":"marian","id":"marian-biblical-hebrew-en","kind":"translation","language_profile":"biblical_hebrew","notes":"No Marian checkpoint exists.","path":null,"status":"not_provisioned","version":null},{"checksum":null,"engine":"moses","id":"moses-biblical-aramaic-en","kind":"translation","language_profile":"biblical_aramaic","notes":"No Moses phrase table has been trained.","path":null,"status":"not_provisioned","version":null},{"checksum":null,"engine":"marian","id":"marian-biblical-aramaic-en","kind":"translation","language_profile":"biblical_aramaic","notes":"No Marian checkpoint exists.","path":null,"status":"not_provisioned","version":null}]}
+{
+  "generated_for": "OCR, corpus retrieval, and trained translation models. A manifest entry is NOT evidence a model exists; readiness is checked live by /api/capabilities and /api/models (artifact directory on disk + model card + engine essentials). SMT/NMT entries below describe the artifact layout and model-card contract the training orchestrators produce; their status stays not_provisioned until a real training run exports an artifact and flips the entry.",
+  "models": [
+    {
+      "checksum": null,
+      "engine": "tesseract",
+      "id": "tesseract-heb",
+      "kind": "ocr",
+      "language_profile": null,
+      "notes": "The heb (and eng) traineddata files were downloaded on 2026-11-24. The tesseract BINARY is not provisioned on the build machine: 'apt-get download tesseract-ocr ...' failed with 'Unable to locate package' against stale package lists, and a subsequent 'apt-get update' did not complete. OCR therefore remains unavailable until the binary is installed (scripts/provision-ocr.ps1 / docs/OCR.md). Used for BOTH biblical_hebrew and biblical_aramaic profiles (Hebrew script); Syriac traineddata is never used for Hebrew-script Aramaic.",
+      "path": null,
+      "status": "traineddata_downloaded_binary_missing",
+      "traineddata": {
+        "also_downloaded": {
+          "lang": "eng",
+          "sha256": "daa0c97d651c19fba3b25e81317cd697e9908c8208090c94c3905381c23fc047"
+        },
+        "lang": "heb",
+        "license": "Apache-2.0 (tessdata)",
+        "local_location": "outside the repository (developer tools tessdata directory, referenced via TESSDATA_PREFIX)",
+        "sha256": "7da6ea6b7a2620ec8e8b41de2967a13d429635a56657a0b30b622501a573d3e1",
+        "url": "https://raw.githubusercontent.com/tesseract-ocr/tessdata/main/heb.traineddata"
+      },
+      "version": null
+    },
+    {
+      "checksum": null,
+      "engine": "kraken",
+      "id": "kraken-historical-hebrew",
+      "kind": "ocr",
+      "language_profile": null,
+      "notes": "No Kraken model has been trained or downloaded; the adapter performs an honest import/model check only.",
+      "path": null,
+      "status": "not_provisioned",
+      "version": null
+    },
+    {
+      "checksum": null,
+      "engine": "moses",
+      "id": "moses-biblical-hebrew-en",
+      "kind": "translation",
+      "language_profile": "biblical_hebrew",
+      "notes": "No Moses model has been trained yet. Training pipeline: training/smt/train_smt.py (WSL2-first, docs/TRAINING.md). The Hebrew profile has a prepared training split; the export step flips this entry to provisioned only after a real run.",
+      "path": null,
+      "status": "not_provisioned",
+      "version": null,
+      "artifact_layout": {
+        "artifact_dir": "artifacts/models/smt/<profile-short>",
+        "required_files": [
+          {
+            "path": "moses.ini",
+            "role": "config"
+          },
+          {
+            "path": "phrase-table.gz (or binarised phrase table)",
+            "role": "phrase_table"
+          },
+          {
+            "path": "reordering-table.* (when produced)",
+            "role": "reordering_table"
+          },
+          {
+            "path": "lm.binary (or lm.arpa)",
+            "role": "language_model"
+          },
+          {
+            "path": "vocabulary.source.txt",
+            "role": "vocabulary_source"
+          },
+          {
+            "path": "model_card.json",
+            "role": "model_card"
+          }
+        ],
+        "produced_by": "training/smt/train_smt.py (WSL2-first; scripts/smt-train.ps1 / .sh)",
+        "runtime": "backend runs a locally installed moses binary (AHAIET_MOSES_CMD or PATH) with the exported moses.ini; WSL2 is not needed at runtime"
+      },
+      "model_card_contract": {
+        "written_by": "the training orchestrator at export time (training/common/manifest.py)",
+        "fields": [
+          "engine",
+          "language_profile",
+          "model_version",
+          "artifact_sha256",
+          "primary_artifact",
+          "files[{path,role,sha256,size_bytes}]",
+          "dataset_card_sha256",
+          "dataset_id",
+          "tool_versions",
+          "license",
+          "provenance",
+          "metrics (null until the evaluation harness records real scores)"
+        ]
+      },
+      "evaluation": null,
+      "selection": null
+    },
+    {
+      "checksum": null,
+      "engine": "marian",
+      "id": "marian-biblical-hebrew-en",
+      "kind": "translation",
+      "language_profile": "biblical_hebrew",
+      "notes": "No Marian checkpoint exists yet. Training pipeline: training/nmt/train_nmt.py with training/nmt/config-hebrew.yml (CPU) or config-hebrew-gpu.yml. The data gate (default minimum 500 training pairs) applies before any training starts.",
+      "path": null,
+      "status": "not_provisioned",
+      "version": null,
+      "artifact_layout": {
+        "artifact_dir": "artifacts/models/nmt/<profile-short>",
+        "required_files": [
+          {
+            "path": "model.npz",
+            "role": "checkpoint"
+          },
+          {
+            "path": "vocab.spm",
+            "role": "vocabulary"
+          },
+          {
+            "path": "decoder-config.yml",
+            "role": "decoder_config"
+          },
+          {
+            "path": "vocabulary.source.txt",
+            "role": "vocabulary_source"
+          },
+          {
+            "path": "model_card.json",
+            "role": "model_card"
+          }
+        ],
+        "produced_by": "training/nmt/train_nmt.py (scripts/nmt-train.ps1 / .sh)",
+        "runtime": "backend runs a locally installed marian-decoder binary (AHAIET_MARIAN_DECODER_CMD or PATH) with the exported decoder-config.yml; CPU-only unless the decoder config selects a GPU"
+      },
+      "model_card_contract": {
+        "written_by": "the training orchestrator at export time (training/common/manifest.py)",
+        "fields": [
+          "engine",
+          "language_profile",
+          "model_version",
+          "artifact_sha256",
+          "primary_artifact",
+          "files[{path,role,sha256,size_bytes}]",
+          "dataset_card_sha256",
+          "dataset_id",
+          "tool_versions",
+          "license",
+          "provenance",
+          "metrics (null until the evaluation harness records real scores)"
+        ]
+      },
+      "evaluation": null,
+      "selection": null
+    },
+    {
+      "checksum": null,
+      "engine": "moses",
+      "id": "moses-biblical-aramaic-en",
+      "kind": "translation",
+      "language_profile": "biblical_aramaic",
+      "notes": "No Moses model has been trained. Under the recorded split strategy all Aramaic passages are in the held-out test partition, so this profile currently has no training data; the SMT orchestrator stops with that explanation until the strategy is revised or more Aramaic books are imported.",
+      "path": null,
+      "status": "not_provisioned",
+      "version": null,
+      "artifact_layout": {
+        "artifact_dir": "artifacts/models/smt/<profile-short>",
+        "required_files": [
+          {
+            "path": "moses.ini",
+            "role": "config"
+          },
+          {
+            "path": "phrase-table.gz (or binarised phrase table)",
+            "role": "phrase_table"
+          },
+          {
+            "path": "reordering-table.* (when produced)",
+            "role": "reordering_table"
+          },
+          {
+            "path": "lm.binary (or lm.arpa)",
+            "role": "language_model"
+          },
+          {
+            "path": "vocabulary.source.txt",
+            "role": "vocabulary_source"
+          },
+          {
+            "path": "model_card.json",
+            "role": "model_card"
+          }
+        ],
+        "produced_by": "training/smt/train_smt.py (WSL2-first; scripts/smt-train.ps1 / .sh)",
+        "runtime": "backend runs a locally installed moses binary (AHAIET_MOSES_CMD or PATH) with the exported moses.ini; WSL2 is not needed at runtime"
+      },
+      "model_card_contract": {
+        "written_by": "the training orchestrator at export time (training/common/manifest.py)",
+        "fields": [
+          "engine",
+          "language_profile",
+          "model_version",
+          "artifact_sha256",
+          "primary_artifact",
+          "files[{path,role,sha256,size_bytes}]",
+          "dataset_card_sha256",
+          "dataset_id",
+          "tool_versions",
+          "license",
+          "provenance",
+          "metrics (null until the evaluation harness records real scores)"
+        ]
+      },
+      "evaluation": null,
+      "selection": null
+    },
+    {
+      "checksum": null,
+      "engine": "marian",
+      "id": "marian-biblical-aramaic-en",
+      "kind": "translation",
+      "language_profile": "biblical_aramaic",
+      "notes": "No Marian checkpoint exists. The NMT data gate is expected to write a not-ready report for this profile (0 training pairs in the present corpus, below the configured minimum); see training/nmt/train_nmt.py and docs/TRAINING.md.",
+      "path": null,
+      "status": "not_provisioned",
+      "version": null,
+      "artifact_layout": {
+        "artifact_dir": "artifacts/models/nmt/<profile-short>",
+        "required_files": [
+          {
+            "path": "model.npz",
+            "role": "checkpoint"
+          },
+          {
+            "path": "vocab.spm",
+            "role": "vocabulary"
+          },
+          {
+            "path": "decoder-config.yml",
+            "role": "decoder_config"
+          },
+          {
+            "path": "vocabulary.source.txt",
+            "role": "vocabulary_source"
+          },
+          {
+            "path": "model_card.json",
+            "role": "model_card"
+          }
+        ],
+        "produced_by": "training/nmt/train_nmt.py (scripts/nmt-train.ps1 / .sh)",
+        "runtime": "backend runs a locally installed marian-decoder binary (AHAIET_MARIAN_DECODER_CMD or PATH) with the exported decoder-config.yml; CPU-only unless the decoder config selects a GPU"
+      },
+      "model_card_contract": {
+        "written_by": "the training orchestrator at export time (training/common/manifest.py)",
+        "fields": [
+          "engine",
+          "language_profile",
+          "model_version",
+          "artifact_sha256",
+          "primary_artifact",
+          "files[{path,role,sha256,size_bytes}]",
+          "dataset_card_sha256",
+          "dataset_id",
+          "tool_versions",
+          "license",
+          "provenance",
+          "metrics (null until the evaluation harness records real scores)"
+        ]
+      },
+      "evaluation": null,
+      "selection": null
+    }
+  ]
+}

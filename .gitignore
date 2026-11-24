@@ -21,6 +21,16 @@ artifacts/benchmarks/*
 *.pt
 *.pth
 .env
+# Training work dirs and trained-model byproducts (exported artifacts
+# live under artifacts/models/, already ignored above)
+training/**/work/
+training/datasets/prepared/
+*.npz
+*.spm
+*.arpa
+*.binary
+phrase-table*
+reordering-table*
 
 *.egg-info/
 .pytest_cache/

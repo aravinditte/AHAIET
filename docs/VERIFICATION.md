@@ -77,5 +77,100 @@ python -m app.corpus.import_morphhb --download --import-db
 ```
 Recorded parse report from data preparation: 1,890 verses parsed (Genesis + Daniel), 1,885 with aligned WEB English, 1,690 Hebrew / 200 Aramaic passages, 0 duplicates skipped, 0 validation errors; five verses (Genesis 32:33; Daniel 3:31–33; 6:29) have no aligned English due to WLC/WEB verse-numbering differences. Source-file sha256 values are in `artifacts/manifests/datasets.json`. The database import step itself is part of the developer run above (`scripts/import-corpus.*`).
 
+## SMT/NMT training and translation evaluation (coded; not yet run)
+
+Per the owner's instruction this code was written to be run by the developer; **nothing in this section has been executed** — no training run, no evaluation, no scores exist. Commands are given for Windows PowerShell and WSL2/bash. Prerequisites: corpus imported (above), plus the Moses/GIZA++/KenLM toolchain inside WSL2 and/or a Marian build (docs/TRAINING.md), and `pip install -r training\requirements.txt` for sacrebleu/SentencePiece.
+
+### Dataset preparation
+```powershell
+python training\datasets\prepare_parallel.py
+python -m pytest training\tests -q
+```
+```bash
+python3 training/datasets/prepare_parallel.py
+python3 -m pytest training/tests -q
+```
+| Case | Expected behaviour |
+|---|---|
+| Hebrew prepared files | `training/datasets/prepared/biblical_hebrew/` holds train (693 pairs) / validation (839) / test (157) source+vocalized, source+consonantal, and target files, one verse per line and line-aligned; `dataset_card.json` counts match the files and every file's sha256 in the card matches the file on disk. |
+| Aramaic prepared files | Train and validation files exist but are EMPTY (0 pairs); test holds 196 pairs; the card's `small_corpus.statement` and `prep_report.json`'s data statement say plainly that all Aramaic passages sit in the held-out Daniel test partition and no Aramaic training data exists yet. |
+| Empty-English verses | 5 verses (Genesis 32:33; Daniel 3:31–33; 6:29) are excluded from the parallel files and listed in the card's `excluded_empty_english_references` — not aligned to neighbouring verses. |
+| Leakage checks | `leakage_report.json` shows no cross-split exact/nodiac duplicates; near-duplicates (if any) are flagged with references. The training tests plant a cross-split duplicate and a pointing-only duplicate and expect a hard failure (exit code 2 from the CLI). |
+| Group integrity | The training tests confirm no (book, chapter) group spans two splits for the fixture, and that a synthetic group spanning train/test is rejected. |
+| Views | The vocalized train source contains niqqud (e.g. shewa); the consonantal file for the same lines contains none. Canonical text is unchanged in the corpus itself. |
+
+### Moses SMT training (WSL2)
+```powershell
+.\scripts\smt-train.ps1 -Profile biblical_hebrew
+.\scripts\smt-train.ps1 -Profile biblical_aramaic
+```
+```bash
+./scripts/smt-train.sh biblical_hebrew
+python3 training/smt/train_smt.py --profile biblical_hebrew
+```
+| Case | Expected behaviour |
+|---|---|
+| Hebrew, full toolchain present | Steps complete in order in `training/smt/work/hebrew/train.log`; `artifacts/models/smt/hebrew/` gains moses.ini + phrase table + LM + vocabulary.source.txt + model_card.json (tool versions recorded from the tools themselves); the manifest entry `moses-biblical-hebrew-en` flips to `provisioned` with path/checksum/version; GET /api/models then reports `artifact_state="trained_but_not_evaluated"`, `ok=true`. |
+| Hebrew, KenLM missing | The run stops BEFORE training with the KenLM install message (exit 3). No artifact directory is completed and the manifest is unchanged — no LM is faked. |
+| Hebrew, MOSES_HOME missing | Tokenization/cleaning fall back to the repository implementations WITH the substitutions written into train.log; the run stops at train-model.perl with install instructions (exit 3), keeping the real intermediate files. |
+| Aramaic | Stops with exit 4: 0 training pairs under the recorded split strategy, with the explanation. No artifact, no manifest change. |
+| Tuning | With the moses binary + mert-moses.pl present, MERT runs on the validation split and the tuned moses.ini is exported; without them the untuned model is exported and the skip + reason are recorded in the model card's `tuning` block. |
+
+### Marian NMT training
+```powershell
+.\scripts\nmt-train.ps1 -Profile biblical_hebrew
+.\scripts\nmt-train.ps1 -Profile biblical_aramaic
+```
+```bash
+./scripts/nmt-train.sh biblical_hebrew
+python3 training/nmt/train_nmt.py --profile biblical_aramaic
+```
+| Case | Expected behaviour |
+|---|---|
+| Aramaic data gate | Exit 3 (an expected outcome, not a crash). `artifacts/models/nmt/aramaic/not_ready.json` + `not_ready.md` state: 0 training pairs, configured minimum 500, the split-strategy reason, and what would change it. No checkpoint is created; the manifest is unchanged. |
+| Hebrew, Marian present | Joint SentencePiece vocabulary is built (the log says whether the Python package or spm_train was used); training runs from the rendered `training/nmt/work/hebrew/config.yml`; export writes model.npz + vocab.spm + decoder-config.yml + vocabulary.source.txt + model_card.json under `artifacts/models/nmt/hebrew/`; the manifest entry flips to `provisioned`. |
+| Hebrew, Marian binary missing | Vocabulary + rendered config are produced and kept; the run then stops with the install message (exit 3). No checkpoint, no manifest change. |
+| Fine-tuning | `--pretrained <local file>` adds `pretrained-model:` to the rendered config; a nonexistent path stops the run with an error before the data gate's training steps. Nothing is ever downloaded. |
+| GPU variant | `--config-variant gpu` renders the `-gpu` config template (device 0); on a CPU-only machine use the default CPU variant. |
+
+### Backend integration (trained models)
+```powershell
+cd backend; .\.venv\Scripts\Activate.ps1; python -m pytest -q
+```
+```bash
+cd backend && .venv/bin/python -m pytest -q
+```
+| Case | Expected behaviour |
+|---|---|
+| Adapter tests (tests/test_translation_models.py) | Artifact resolution accepts a complete Moses/Marian fixture directory and lists the exact missing piece for an incomplete one; selection defaults to Moses with no recorded metrics and prefers the higher recorded chrF++ when both have metrics; selection for Aramaic stays empty when only Hebrew is provisioned. (Decoder binaries are tiny echo test doubles inside the tests — fixtures for the subprocess contract, not models.) |
+| Translate via trained model | With a provisioned artifact, POST /api/translate for non-corpus text returns 200 with `engine`, `model_version`, `artifact_sha256`, `coverage`, and OOV words named in both `coverage.oov_words` and `warnings`. GET /api/capabilities shows the profile's engine + evaluation state under `translation.per_profile`; the other profile is unaffected. |
+| Incomplete artifact | Deleting one required file (e.g. the LM) makes translate return 503 naming that piece, and /api/models reports `artifact_state="provisioned_missing_files"` with the same list. |
+| Verified reference unchanged | A corpus-matching text still returns `translation_method="verified_reference"` with citations and null model fields — retrieval outranks trained models. |
+
+### Translation evaluation harness
+```powershell
+.\scripts\evaluate-translation.ps1 -Profile biblical_hebrew
+.\scripts\evaluate-translation.ps1 -Profile biblical_aramaic
+```
+```bash
+./scripts/evaluate-translation.sh biblical_hebrew
+python3 training/evaluation/evaluate_translation.py --profile biblical_aramaic
+```
+| Case | Expected behaviour |
+|---|---|
+| Reports written | `artifacts/benchmarks/<profile>-translation-eval.json` + `.md` appear, with the metric implementation named (sacrebleu, or the labelled pure-Python fallback). |
+| Dictionary baseline | Present and labelled "dictionary_gloss_baseline — not a sentence translation", with gloss output (lemma/Strong's identifiers, unknown words in ⟦ ⟧) and a low score — that low score is the honest floor, not a bug. |
+| Unavailable engines | Any engine without a complete artifact/binary is listed `unavailable` WITH its reason and null scores — never zeros. |
+| Retrieval caveat | The retrieval row and the report header state that test verses come from the same corpus as the retrieval index, so its coverage is an upper-bound reference figure. |
+| Selection record | After a run where at least one trained engine was evaluated, the winner's model_card.json gains real `metrics` + `selection`, its manifest entry gains `evaluation` + `selection`, and /api/models then reports `artifact_state="evaluated"` with `chrf_pp`. With no trained engine evaluated, no record is written and the backend keeps the documented default order. |
+| Failure examples | Each evaluated engine lists its five lowest-scoring verses with source, reference English, and its actual output. |
+| Human review | `training/evaluation/human_review_template.md` is filled in by a reviewer for any engine whose scores will be cited; the template ships with blank scores. |
+
+### Frontend checks (trained-model display)
+```powershell
+cd frontend; npm run typecheck; npm run test; npm run build
+```
+Expected: typecheck clean; vitest passes including the export case asserting engine/model-version/coverage lines in TXT and JSON exports; in the running UI, a translation produced by a trained model shows the engine, model version, artifact hash prefix, evaluation state, and source-token coverage with OOV words under the translation; a verified-reference result shows its citation panel as before.
+
 ## Historical record — foundation build (actually run at that time)
 Recorded when the foundation was built, before the code-only instruction: backend pytest 15 passed; frontend typecheck clean; vitest 2 passed; Next.js build succeeded; live smoke: `/api/health` ok, real PNG upload 200, `/api/translate` honest 503. Tesseract was absent on that machine, so OCR was unavailable — that absence is what the OCR provisioning above addresses.

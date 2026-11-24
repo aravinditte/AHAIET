@@ -48,6 +48,25 @@ Then open http://localhost:3000, upload a supported image (PNG/JPEG/TIFF/WEBP/BM
 
 With the corpus imported, translating a passage that matches Genesis or Daniel returns that edition's English with its citation and provenance; anything else reports that a trained general translation model is not yet available. `.\scripts\provision-models.ps1` only checks and reports model state; it downloads nothing silently.
 
+## Training general translation models (Moses SMT + Marian NMT)
+
+The full training infrastructure is in place; nothing has been trained yet, and the app says so honestly until a real run exports a model. Data first (per-profile parallel corpora with leakage checks and dataset cards), then training — Moses inside WSL2, Marian on CPU (GPU optional) — then the shared evaluation harness that scores every engine on the same held-out test split and records the winning engine per profile. One data fact shapes everything: under the recorded split strategy all Aramaic passages sit in the held-out test partition, so Aramaic currently has no training data and the pipelines refuse/report not-ready for that profile instead of improvising (details in `docs/TRAINING.md`).
+
+```powershell
+python training\datasets\prepare_parallel.py
+.\scripts\smt-train.ps1 -Profile biblical_hebrew
+.\scripts\nmt-train.ps1 -Profile biblical_hebrew
+.\scripts\evaluate-translation.ps1 -Profile biblical_hebrew
+```
+```bash
+python3 training/datasets/prepare_parallel.py
+./scripts/smt-train.sh biblical_hebrew
+./scripts/nmt-train.sh biblical_hebrew
+./scripts/evaluate-translation.sh biblical_hebrew
+```
+
+Exported artifacts land in `artifacts/models/` (outside source control) with model cards; the backend then serves them through real subprocess adapters with per-profile selection, OOV warnings, and coverage reporting. See `docs/TRAINING.md` and `docs/MODEL_EVALUATION.md`.
+
 Manual equivalent:
 
 ```powershell
@@ -67,7 +86,7 @@ npm run dev
 
 ## Layout
 
-`frontend/` Next.js app · `backend/` FastAPI app (`app/api`, `app/core`, `app/schemas`, `app/services/{preprocessing,ocr,language,morphology,retrieval,translation,verification}`, `app/storage`) · `training/` dataset/SMT/NMT/OCR/evaluation work (nothing trained yet) · `scripts/` PowerShell setup/start/verify/provision-check · `artifacts/manifests/` checksummed dataset & model manifests (binaries live outside source control) · `docs/` contract, build state, handoff, architecture, API, installation, limitations.
+`frontend/` Next.js app · `backend/` FastAPI app (`app/api`, `app/core`, `app/schemas`, `app/services/{preprocessing,ocr,language,morphology,retrieval,translation,verification}`, `app/storage`) · `training/` dataset preparation, Moses SMT and Marian NMT orchestrators, OCR fixtures, and the shared translation evaluation harness (nothing trained yet) · `scripts/` PowerShell + bash setup/start/verify/provision/train/evaluate · `artifacts/manifests/` checksummed dataset & model manifests (binaries live outside source control) · `docs/` contract, build state, handoff, architecture, API, installation, limitations.
 
 Continuity files — read these first in any new session: `docs/PROJECT_CONTRACT.md`, `docs/BUILD_STATE.md`, `docs/PHASE_HANDOFF.md`.
 

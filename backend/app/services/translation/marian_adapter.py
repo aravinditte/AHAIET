@@ -8,4 +8,4 @@ def run_marian(text: str, artifact_path: Path) -> str:
         from transformers import MarianMTModel, MarianTokenizer  # noqa: F401
     except Exception as e:
         raise UnavailableError("marian_unavailable", "Marian runtime (transformers/torch) is not installed.", str(e))
-    raise UnavailableError("marian_unavailable", "Marian inference wiring is a Part 4 task; no translation was produced.", f"artifact={artifact_path}")
+    raise UnavailableError("marian_unavailable", "Marian inference wiring is a the translation-model work task; no translation was produced.", f"artifact={artifact_path}")

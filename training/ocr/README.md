@@ -1,6 +1,2 @@
-# training/ocr
-
-Part 1 placeholder. Nothing in this directory has been trained, downloaded, or provisioned yet.
-Any dataset or model produced here in a later part must be recorded, with provenance, licence,
-checksums and partitions, in artifacts/manifests/datasets.json / models.json before it may be
-reported as available. See docs/TRAINING.md and docs/DATASETS.md.
+# OCR training & fixtures
+generate_fixtures.py renders labelled fixture images from real corpus passages (training/datasets/fixtures/sample_passages.jsonl) with a Hebrew serif font. fixtures/ground_truth.json holds the ground truth + provenance; fixture PNGs are produced by running the generator. No Kraken fine-tune exists yet.

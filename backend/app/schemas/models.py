@@ -8,9 +8,19 @@ class TranslateRequest(BaseModel):
 class OcrRequest(BaseModel):
     upload_id: str
     language_profile: str | None = None
+    preprocessing_profile: str = "conservative"
+    psm: int | None = None
 class ProcessRequest(BaseModel):
     upload_id: str
     language_profile: str | None = None
+    preprocessing_profile: str = "conservative"
+    psm: int | None = None
+class MorphologyRequest(BaseModel):
+    text: str = Field(default="")
+    language: str
+class RetrievalRequest(BaseModel):
+    text: str = Field(default="")
+    language: str
 class TranslationResponse(BaseModel):
     request_id: str
     status: str

@@ -1,6 +1,2 @@
-# training/evaluation
-
-Part 1 placeholder. Nothing in this directory has been trained, downloaded, or provisioned yet.
-Any dataset or model produced here in a later part must be recorded, with provenance, licence,
-checksums and partitions, in artifacts/manifests/datasets.json / models.json before it may be
-reported as available. See docs/TRAINING.md and docs/DATASETS.md.
+# Evaluation
+evaluate_ocr.py runs the backend OCR service over the fixtures in training/ocr/fixtures/ and writes measured CER/WER + raw output to training/ocr/fixtures/ocr_measurement.json. It produces nothing until run on a machine with a provisioned Tesseract binary; no scores are recorded anywhere before that run.

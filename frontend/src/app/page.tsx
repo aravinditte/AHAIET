@@ -7,7 +7,7 @@ import { SourceEditor } from "@/components/SourceEditor";
 import { TranslationPanel } from "@/components/TranslationPanel";
 import { ExportButtons } from "@/components/ExportButtons";
 import { api, ApiClientError } from "@/lib/api";
-import type { LanguageProfile, UploadMeta } from "@/types/api";
+import type { LanguageProfile, OcrResult, TranslationResult, UploadMeta } from "@/types/api";
 
 export default function Home() {
   const [file, setFile] = React.useState<File | null>(null);
@@ -15,9 +15,11 @@ export default function Home() {
   const [uploadMeta, setUploadMeta] = React.useState<UploadMeta | null>(null);
   const [languages, setLanguages] = React.useState<LanguageProfile[]>([]);
   const [language, setLanguage] = React.useState("");
+  const [preprocessing, setPreprocessing] = React.useState("conservative");
+  const [ocrResult, setOcrResult] = React.useState<OcrResult | null>(null);
   const [rawOcr, setRawOcr] = React.useState("");
   const [corrected, setCorrected] = React.useState("");
-  const [translation, setTranslation] = React.useState("");
+  const [translationResult, setTranslationResult] = React.useState<TranslationResult | null>(null);
   const [status, setStatus] = React.useState<string>("");
   const [error, setError] = React.useState<string | null>(null);
   const [dark, setDark] = React.useState(false);
@@ -31,7 +33,7 @@ export default function Home() {
   }, [file]);
 
   const onFile = async (f: File | null) => {
-    setFile(f); setError(null); setUploadMeta(null); setRawOcr(""); setCorrected(""); setTranslation("");
+    setFile(f); setError(null); setUploadMeta(null); setRawOcr(""); setCorrected(""); setOcrResult(null); setTranslationResult(null);
     if (!f) return;
     setStatus("Uploading to backend for content validation…");
     try { const meta = await api.upload(f); setUploadMeta(meta); setStatus("Image validated and stored by the backend."); }
@@ -40,24 +42,35 @@ export default function Home() {
   const extract = async () => {
     if (!uploadMeta) { setError("Upload an image first."); return; }
     setError(null); setStatus("Running OCR…");
-    try { const r = await api.ocr(uploadMeta.id, language || undefined); setRawOcr(r.original_ocr_text); setCorrected(r.original_ocr_text); setStatus("OCR complete."); }
+    try {
+      const r = await api.ocr(uploadMeta.id, language || undefined, preprocessing);
+      setOcrResult(r); setRawOcr(r.original_ocr_text); setCorrected(r.original_ocr_text);
+      setStatus(`OCR complete (${r.ocr_engine}, profile ${r.ocr_profile}, ${r.word_count} words). Review and correct the text, then translate.`);
+    }
     catch (e) { setError(e instanceof ApiClientError ? e.message : String(e)); setStatus(""); }
   };
   const translate = async () => {
     if (!corrected.trim()) { setError("There is no corrected source text to translate."); return; }
-    setError(null); setStatus("Translating with the local model…");
-    try { const r = await api.translate(corrected, language || undefined); setTranslation(r.english_translation ?? ""); setStatus("Translation complete."); }
-    catch (e) { setError(e instanceof ApiClientError ? e.message : String(e)); setStatus(""); }
+    setError(null); setStatus("Checking the verified corpus and local models…");
+    try {
+      const r = await api.translate(corrected, language || undefined);
+      setTranslationResult(r);
+      setStatus(r.translation_method === "verified_reference"
+        ? "Verified corpus match found — the cited edition's English is shown with its provenance."
+        : "Translation complete.");
+    }
+    catch (e) { setTranslationResult(null); setError(e instanceof ApiClientError ? e.message : String(e)); setStatus(""); }
   };
-  const reset = () => { setFile(null); setUploadMeta(null); setRawOcr(""); setCorrected(""); setTranslation(""); setError(null); setStatus(""); setLanguage(""); };
+  const reset = () => { setFile(null); setUploadMeta(null); setRawOcr(""); setCorrected(""); setOcrResult(null); setTranslationResult(null); setError(null); setStatus(""); setLanguage(""); };
   const preview = uploadMeta ? api.uploadUrl(uploadMeta.id) : localPreview;
+  const translation = translationResult?.english_translation ?? "";
 
   return (
     <main className="mx-auto max-w-4xl space-y-4 p-4 sm:p-6">
       <header className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold">AHAIET — Ancient Hebrew &amp; Ancient Aramaic Image-to-English Translator</h1>
-          <p className="mt-1">Upload an image of Biblical Hebrew or Biblical Aramaic, review and correct the captured text, then translate it into English. Everything runs locally and offline once models are provisioned; readiness below is reported honestly, never assumed.</p>
+          <p className="mt-1">Upload an image of Biblical Hebrew or Biblical Aramaic, review and correct the captured text, then translate it into English. Translation is a verified corpus reference where one matches, or a provisioned local model; otherwise the app says so plainly. Everything runs locally and offline once provisioned; readiness below is reported honestly, never assumed.</p>
         </div>
         <button type="button" onClick={() => setDark(!dark)} aria-pressed={dark} className="rounded border px-3 py-1">{dark ? "Light" : "Dark"} theme</button>
       </header>
@@ -66,18 +79,28 @@ export default function Home() {
       <section aria-labelledby="proc-h" className="rounded border p-4">
         <h2 id="proc-h" className="font-semibold">Step 2 — Language &amp; extraction</h2>
         <div className="mt-2"><LanguageSelector languages={languages} value={language} onChange={setLanguage} /></div>
+        <div className="mt-3">
+          <label htmlFor="preproc" className="font-semibold">Preprocessing profile</label>
+          <select id="preproc" value={preprocessing} onChange={(e) => setPreprocessing(e.target.value)} className="ml-2 rounded border p-1 dark:bg-neutral-800">
+            <option value="conservative">Conservative (preserves small marks; no deskew/median)</option>
+            <option value="enhanced">Enhanced (deskew + adaptive contrast; median only when safe)</option>
+          </select>
+          <p className="text-sm">The uploaded original is never modified; preprocessing works on a derived copy and reports every step.</p>
+        </div>
         <button type="button" onClick={extract} disabled={!uploadMeta} className="mt-3 rounded bg-blue-700 px-4 py-2 text-white disabled:opacity-40">Process / Extract Text (OCR)</button>
       </section>
-      <SourceEditor rawOcr={rawOcr} corrected={corrected} onCorrected={setCorrected} />
+      <SourceEditor rawOcr={rawOcr} corrected={corrected} onCorrected={setCorrected}
+        uncertainSpans={ocrResult?.uncertain_spans ?? []} meanConfidence={ocrResult?.mean_confidence ?? null}
+        ocrNote={ocrResult ? `OCR profile: ${ocrResult.ocr_profile} (${ocrResult.ocr_lang} traineddata). ${ocrResult.ocr_profile_note}` : null} />
       <section aria-labelledby="trbtn-h" className="rounded border p-4">
         <h2 id="trbtn-h" className="font-semibold">Step 4 — Translate the confirmed transcription</h2>
         <button type="button" onClick={translate} disabled={!corrected.trim()} className="mt-2 rounded bg-blue-700 px-4 py-2 text-white disabled:opacity-40">Translate</button>
       </section>
-      <TranslationPanel translation={translation} />
+      <TranslationPanel result={translationResult} />
       {status && <p role="status" className="rounded border p-2">{status}</p>}
       {error && <p role="alert" className="rounded border border-red-500 p-2">{error}</p>}
       <div className="flex flex-wrap items-center gap-3">
-        <ExportButtons state={{ rawOcrText: rawOcr, correctedSourceText: corrected, englishTranslation: translation, languageProfile: language || null, uploadId: uploadMeta?.id ?? null }} />
+        <ExportButtons state={{ rawOcrText: rawOcr, correctedSourceText: corrected, englishTranslation: translation, languageProfile: language || null, uploadId: uploadMeta?.id ?? null, translationMethod: translationResult?.translation_method ?? null, sourceReferences: translationResult?.source_references ?? [] }} />
         <button type="button" onClick={reset} className="rounded border px-3 py-1">Clear / reset</button>
       </div>
     </main>

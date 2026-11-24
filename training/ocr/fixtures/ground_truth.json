@@ -1,0 +1,26 @@
+{
+  "font": "/usr/share/fonts/truetype/noto/NotoSerifHebrew-Regular.ttf",
+  "font_size": 44,
+  "raqm": true,
+  "note": "Ground truth copied from the imported morphhb/WLC corpus sample (training/datasets/fixtures/sample_passages.jsonl). PNG images are produced by running training/ocr/generate_fixtures.py, which regenerates this file with the rendering environment's RAQM flag.",
+  "fixtures": [
+    {
+      "image": "genesis_1_1_hebrew.png",
+      "reference": "Genesis 1:1",
+      "language": "biblical_hebrew",
+      "ground_truth": "בְּרֵאשִׁ֖ית בָּרָ֣א אֱלֹהִ֑ים אֵ֥ת הַשָּׁמַ֖יִם וְאֵ֥ת הָאָֽרֶץ׃",
+      "source_edition": "Westminster Leningrad Codex (WLC) via Open Scriptures morphhb (OSHB)",
+      "license": "WLC text: Public Domain; morphhb annotations: CC BY 4.0; World English Bible: Public Domain",
+      "provenance": "morphhb OSIS file Gen.xml (sha256 recorded in datasets manifest)"
+    },
+    {
+      "image": "daniel_2_4_aramaic.png",
+      "reference": "Daniel 2:4",
+      "language": "biblical_aramaic",
+      "ground_truth": "וַֽיְדַבְּר֧וּ הַכַּשְׂדִּ֛ים לַמֶּ֖לֶךְ אֲרָמִ֑ית מַלְכָּא֙ לְעָלְמִ֣ין חֱיִ֔י אֱמַ֥ר חֶלְמָ֛א לעבדיך וּפִשְׁרָ֥א נְחַוֵּֽא׃",
+      "source_edition": "Westminster Leningrad Codex (WLC) via Open Scriptures morphhb (OSHB)",
+      "license": "WLC text: Public Domain; morphhb annotations: CC BY 4.0; World English Bible: Public Domain",
+      "provenance": "morphhb OSIS file Dan.xml (sha256 recorded in datasets manifest)"
+    }
+  ]
+}

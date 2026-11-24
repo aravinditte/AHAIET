@@ -1,37 +1,32 @@
 # BUILD STATE — AHAIET
-Current phase: **Part 1 of 5 — Foundation. COMPLETE (with OCR/translation honestly unavailable).**
-Build machine: Linux VM, Python 3.12.3, Node v24.22.1, npm 10.9.4, git 2.43.0, CPU only. `which tesseract` -> not found (exit 1).
+Current work: **Foundation monorepo (complete and test-run at build time) + OCR and corpus retrieval (code complete; test execution delegated to the developer — see docs/VERIFICATION.md).**
+Naming rule for this repository: work is named, never numbered. Do not introduce stage/sequence numbering in files, docs, comments, manifests, or commit messages.
 
-## Feature status (evidence-based)
-| Feature | Status | Evidence |
+## Feature status
+| Feature | Status | Notes |
 |---|---|---|
-| Monorepo scaffold (frontend/backend/training/scripts/artifacts/docs) | done | file tree in repo |
-| Backend API (all routes in docs/API.md) | done | pytest 15 passed; live uvicorn smoke (below) |
-| Config (env-typed Settings: upload bytes/pixels, storage, retention, db path) | done | backend/app/core/config.py; pixel-limit test uses env/dataclass override |
-| SQLite schema + migrations (schema_version, language_profiles, model_metadata, reference_passages EMPTY, history, jobs) | done | backend/app/storage/db.py MIGRATIONS v1; health db_ok=true live |
-| Upload validation by content + hash storage + preview fetch | done | tests: valid PNG 200 + byte-identical preview; text-named-.png 400 invalid_image; oversized pixels 400 |
-| Frontend upload/preview, RTL source editor (raw vs corrected separate), readiness panel, translate, copy/export, dark/light, reset | done | npm run build passes; export vitest 2 passed incl. Hebrew Unicode round-trip |
-| OCR (Tesseract adapter: shutil.which + subprocess; Kraken import adapter) | implemented, **unavailable on this machine** | no tesseract binary; /api/capabilities ocr.status=unavailable; /api/ocr 503; process job ends failed with reason (all tested) |
-| Translation (manifest-driven Moses/Marian adapters) | implemented, **unavailable** | every models.json entry not_provisioned/path null; /api/translate 503 translation_model_unavailable; empty text 400 (tested) |
-| Language suggestion | done, conservative | returns "uncertain" + warning without user selection; never Hebrew-from-script |
-| Morphology / retrieval / verification | interface only, not_provisioned | services/*/service.py status() |
-| Datasets / corpora | none | datasets.json datasets=[]; reference_passages empty |
-| Training | none | training/*/README.md placeholders only |
+| Monorepo scaffold, backend API shell, upload validation/storage, frontend upload/preview/RTL editor/export | done, test-run during the foundation build | recorded results in docs/VERIFICATION.md (historical section) |
+| Preprocessing pipeline (conservative + enhanced profiles, step report, original preserved) | coded | Pillow/NumPy: EXIF, grayscale, adaptive contrast, bounded deskew, guarded median, upscale. Developer-run tests: tests/test_corpus_ocr.py |
+| Tesseract OCR (TSV confidences, uncertain spans, reading order, empty-result error) | coded; engine data partially provisioned | heb + eng traineddata downloaded (checksums in models.json); Tesseract binary NOT provisioned on the build machine (see Blockers) |
+| Kraken adapter | coded, unavailable | honest import check; no model |
+| Corpus importer (morphhb/WLC Genesis + Daniel, WEB alignment) | coded; source data downloaded and parsed once as data preparation | parse report: 1,890 verses, 1,885 aligned English, Hebrew 1,690 / Aramaic 200, 0 duplicates, 0 validation errors; DB import is a developer-run step (scripts/import-corpus.*) |
+| Reference retrieval (exact / normalized / variant-candidate, per-profile indexes) | coded | variant is never returned as a match or a translation |
+| Verified-reference translation via /api/translate | coded | returns the cited edition's English only on a verified match; otherwise honest 503 distinguishing no-match from no-corpus |
+| Morphology (separate Hebrew / Aramaic adapters over the morphhb word index) | coded | found / not_found per word; no fabricated tags; 503 when the corpus is not imported |
+| OCR fixtures + CER/WER measurement tooling | coded; not run | training/ocr/generate_fixtures.py, training/evaluation/evaluate_ocr.py, backend/app/evaluation/metrics.py; ground truth = real corpus text (Genesis 1:1, Daniel 2:4) |
+| Frontend OCR/corpus wiring | coded | preprocessing selector, uncertain-span highlighting, OCR profile note, citation/provenance panel, export includes method + references |
+| Translation models (Moses/Marian) | not provisioned | manifest entries unchanged; adapters unchanged |
+| Training | none | nothing trained |
 
-## Dependencies installed (this machine)
-Backend venv backend/.venv: fastapi 0.165.0, uvicorn 0.54.0, pydantic 2.14.4, Pillow 13.0.0, numpy 2.5.5, python-multipart 0.0.34, pytest 9.2.0, httpx 0.28.1. OpenCV: NOT installed (optional extra) — capabilities report opencv=false.
-Frontend: next 15.x, react 19, tailwindcss v4, vitest 2 (npm install completed).
-Locally available OCR/translation models: **none**.
+## Locally available artifacts (data, recorded at download time)
+- morphhb OSIS: artifacts/corpora/morphhb/Gen.xml sha256 0526e5c9…d86449; Dan.xml sha256 bc69d0fa…18fc0d (CC BY 4.0 annotations; WLC public domain).
+- WEB verse-per-line zip: artifacts/corpora/eng-web_vpl.zip sha256 88308b1c…4f4565c (public domain).
+- Canonical parsed corpus: artifacts/corpora/passages.jsonl (1,890 passages, gitignored).
+- Tesseract traineddata (outside the repo): heb sha256 7da6ea6b…3d3e1, eng sha256 daa0c97d…fc047 (Apache-2.0).
+- Committed test fixture: training/datasets/fixtures/sample_passages.jsonl (6 real passages with provenance); OCR ground truth: training/ocr/fixtures/ground_truth.json (fixture PNGs are generated by the script).
 
-## Exact commands & results (Part 1)
-- `which tesseract` -> not found (exit 1)
-- `backend/.venv/bin/pip install -e "backend/.[dev]"` -> Successfully installed (fastapi/pydantic/pytest/httpx/…)
-- `backend/.venv/bin/python -m pytest -q` -> **15 passed**, 1 warning (Starlette TestClient deprecation notice) in 0.42s. One initial collection error (tests/__init__.py broke conftest import) was fixed by removing it.
-- `npm install` -> completed
-- `npm run typecheck` (tsc --noEmit) -> exit 0, no errors
-- `npx vitest run` -> **Test Files 1 passed; Tests 2 passed**
-- `npm run build` -> success; route `/` 4.35 kB, First Load JS 107 kB, static prerender
-- Live smoke: uvicorn on 127.0.0.1:8765 -> /api/health {status:ok, db_ok:true}; /api/capabilities ocr unavailable + translation unavailable + opencv false; POST /api/uploads (real 8x8 PNG) -> 200 with sha256 id; POST /api/translate -> 503 translation_model_unavailable. Server stopped after the check.
+## Blockers (exact)
+- Tesseract binary: `apt-get download tesseract-ocr libtesseract4 libleptonica-dev libarchive13` on the build machine failed with "Unable to locate package" / "no candidate" against stale package lists; a following `apt-get update` did not complete and was stopped. Provisioning paths that remain: scripts/provision-ocr.ps1 (winget) on Windows, or a working apt/brew install — see docs/OCR.md. Consequence: OCR-run tests skip and no CER/WER exists yet. Nothing else is blocked: retrieval/morphology/translation-by-reference need only the corpus DB import.
 
-## Next steps
-Part 2: provision Tesseract + heb traineddata, wire preprocessing/OCR evaluation, Kraken path. See docs/PHASE_HANDOFF.md.
+## What was NOT run (per owner instruction)
+Pytest, vitest, typecheck, build, and the OCR measurement for the OCR/corpus code were not executed by the build assistant. docs/VERIFICATION.md lists every command and the expected behaviour per case for the developer run.

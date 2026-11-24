@@ -9,23 +9,41 @@ morphhb/WLC + WEB corpus (docs/DATASETS.md), prepared per profile by
 
 ## The data, stated plainly
 
-Prepared splits (from the importer's recorded group strategy — Genesis
-chapters 1–25 train, 26–50 validation, Daniel held out as test):
+Prepared splits (book-group strategy, AHAIET-008: whole books are
+assigned to partitions, so no verse can leak across splits; the
+leakage check still runs and fails the run on any cross-split
+duplicate):
+
+| Book group | Partition |
+|---|---|
+| Genesis chapters 1-25 (Hebrew) | train |
+| Genesis chapters 26-50 (Hebrew) | validation |
+| Ezra — Hebrew and Aramaic sections | train |
+| Daniel — Hebrew verses | validation |
+| Daniel — Aramaic verses | **test** (held-out book for Aramaic) |
+
+Counts from the recorded importer parse (sha256 + full report in
+`artifacts/manifests/datasets.json`):
 
 | Profile | Train | Validation | Test |
 |---|---|---|---|
-| Biblical Hebrew | 693 verse pairs | 839 pairs (1 verse has no aligned WEB English and is excluded) | 157 pairs (Daniel's Hebrew verses) |
-| Biblical Aramaic | **0** | **0** | 196 pairs (200 Daniel verses, 4 without aligned English) |
+| Biblical Hebrew | 906 verse pairs | 996 pairs (997 verses, 1 without aligned WEB English) | **0** |
+| Biblical Aramaic | 67 verse pairs (Ezra) | 0 | 196 pairs (200 Daniel verses, 4 without aligned English) |
 
-Consequences, by design:
-- Hebrew can train both engines (693 pairs is still a *small* corpus —
+Consequences, stated plainly:
+- Hebrew can train both engines (906 pairs is still a *small* corpus —
   the dataset card says so, and no generalisation claim may be made).
-- Aramaic currently has **no training or validation data at all**, so
-  the SMT orchestrator stops with that explanation and the Marian
-  orchestrator's data gate writes a not-ready report. Training Aramaic
-  requires a deliberate decision: import more Aramaic books (Ezra's
-  Aramaic sections are the obvious next source) or revise the split
-  strategy — either is a documented data change, never a silent one.
+- Aramaic now HAS training data (Ezra's 67 pairs, above the Moses
+  50-pair minimum, still below the Marian 500-pair gate). Daniel
+  Aramaic remains a genuinely held-out test book: no Daniel Aramaic
+  verse appears in train.
+- **Hebrew now has NO test partition** (Daniel's Hebrew verses moved
+  to validation, and Ezra is training data). A Hebrew evaluation
+  therefore reports `insufficient_test_data` and selection refuses to
+  write — by design — until a held-out Hebrew source is added as a
+  documented data change. This is the deliberate price of the
+  book-group strategy; do not "fix" it by moving verses across splits
+  silently.
 
 ## Shared preparation (both engines)
 

@@ -12,7 +12,7 @@ TSV output is parsed for per-word confidences: words below the threshold (`AHAIE
 Both Biblical Hebrew and Biblical Aramaic (in Hebrew script) use the **heb** traineddata; the selected profile is recorded on every result as `ocr_profile`. Syriac traineddata is never used for Hebrew-script Aramaic. Unsupported historical scripts remain `unsupported` in `/api/languages` until real models exist.
 
 ## Preprocessing
-`/api/ocr` accepts `preprocessing_profile`: `conservative` (default) or `enhanced`. The stored original is never modified; preprocessing builds a derived PNG and returns a step report (see `backend/app/services/preprocessing/service.py`): EXIF orientation, grayscale, tile-based adaptive contrast, bounded projection-profile deskew (enhanced only), median noise reduction (enhanced only, and automatically skipped when fine-detail content suggests small marks such as niqqud/cantillation would be destroyed), upscale toward 300 DPI.
+`/api/ocr` accepts `preprocessing_profile`: `conservative` (default) or `enhanced`. The stored original is never modified; preprocessing builds a derived PNG and returns a step report (see `backend/app/services/preprocessing/service.py`): EXIF orientation, grayscale, tile-based adaptive contrast, bounded projection-profile deskew (enhanced only), median noise reduction (enhanced only, and automatically skipped when fine-detail content suggests small marks such as niqqud/cantillation would be destroyed), pixel upscale toward 300 DPI (the step is reported as `pixel_upscale` with the scaler and the before/after pixel sizes — it adds no optical resolution; source DPI is reported separately).
 
 ## Provisioning
 - Windows: `.\scripts\provision-ocr.ps1` (winget UB-Mannheim build + traineddata download with hashes printed).
@@ -70,3 +70,27 @@ This writes `artifacts/benchmarks/htr-eval-paleo_hebrew.json` with the measured 
 
 ## Fixtures and measurement
 `training/ocr/generate_fixtures.py` renders labelled images (Genesis 1:1 in Hebrew, Daniel 2:4 in Aramaic, both real WLC text from the imported corpus sample) with a Hebrew serif font; ground truth and provenance live in `training/ocr/fixtures/ground_truth.json`. `training/evaluation/evaluate_ocr.py` runs the real OCR service over the fixtures and writes measured CER/WER (Levenshtein, `backend/app/evaluation/metrics.py`) plus raw OCR output to `training/ocr/fixtures/ocr_measurement.json`. No scores exist until that script is run on a machine with the binary.
+
+## Remediation notes
+
+- Readiness is three distinct facts (AHAIET-034): `binary_available`,
+  `language_data_available` (heb present in a bounded, TTL-cached
+  `tesseract --list-langs` probe), and `usable` (both). The frontend
+  readiness panel keys off `usable` and shows the distinct fields.
+- Validation fully decodes the image (`load()` after `verify()`,
+  decompression warnings treated as errors) and rejects multipage /
+  animated inputs for the single-image pipeline (AHAIET-037). A
+  decoded+intermediate byte budget (`AHAIET_PREPROCESSING_MAX_BYTES`)
+  is enforced before heavy steps (AHAIET-038); median filtering uses
+  Pillow's memory-bounded MedianFilter (AHAIET-023).
+- Uncertain spans carry `index`, `occurrence_id`, `block`, `par`, and
+  `line_id` from the TSV, so a repeated word's second occurrence can
+  be highlighted exactly (AHAIET-028/040).
+- Real-manuscript evaluation: `training/ocr/fixtures/manuscript_registry.json`
+  registers rights-cleared manuscript images with ground truth
+  (AHAIET-052). It ships empty — no images are fabricated. Entries
+  require: a public-domain or explicitly licensed source image, a
+  diplomatic ground-truth transcription, and script / diacritics /
+  degradation stratum labels. `training/ocr/evaluate_ocr.py` scores
+  registry entries per stratum alongside the synthetic stratum when
+  entries exist.

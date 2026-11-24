@@ -105,3 +105,23 @@ needs WSL2).
 - Offline proofs: docs/OFFLINE_OPERATION.md.
 - Acceptance state: docs/ACCEPTANCE_AUDIT.md.
 - Verification commands (all marked not-yet-run): docs/VERIFICATION.md.
+
+## Dependency strategy (AHAIET-054)
+
+Backend direct dependencies are pinned exactly in
+`backend/pyproject.toml`; ranges remain only for transitive
+dependencies. The pinned set (FastAPI 0.115.6, Pydantic 2.10.4,
+Pillow 11.0.0, NumPy 2.2.1, uvicorn 0.34.0, python-multipart 0.0.20;
+dev: pytest 8.3.4, httpx 0.28.1, ruff 0.8.4) is the set this code was
+written and syntax-checked against. Historic build notes from a
+different snapshot cite Pillow 13 / pytest 9; those versions were NOT
+adopted because no code in this tree was verified against them —
+upgrading is a deliberate, separately verified change. The frontend
+installs with `npm ci` against the committed lockfile. CI runs
+`pip-audit` and `npm audit` scan steps (report-only) — see
+`.github/workflows/ci.yml`.
+
+## Provisioning
+
+The ordered provisioning states and their verification commands live
+in docs/PROVISIONING.md.

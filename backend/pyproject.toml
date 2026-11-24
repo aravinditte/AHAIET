@@ -11,9 +11,16 @@ requires-python = ">=3.11"
 # Raise a bound deliberately, in its own change, after checking the
 # release notes — see scripts/check-dependencies.ps1 / .sh and
 # docs/SECURITY.md (dependency hygiene).
-dependencies = ["fastapi>=0.110,<0.200", "uvicorn>=0.29,<1.0", "pydantic>=2.6,<3.0", "python-multipart>=0.0.9,<0.1", "Pillow>=10.3,<12.0", "numpy>=1.26,<3.0"]
+# AHAIET-054: direct dependencies are pinned EXACTLY; ranges remain
+# only for transitive dependencies (resolved by pip). The chosen set
+# is the one this code was written and syntax-checked against
+# (FastAPI 0.115 / Pydantic 2.10 / Pillow 11 / NumPy 2.2 era). Historic
+# build notes elsewhere cite Pillow 13 / pytest 9 from a different
+# snapshot; those were NOT adopted because no code in this tree was
+# verified against them — see docs/RELEASE.md (dependency strategy).
+dependencies = ["fastapi==0.115.6", "uvicorn==0.34.0", "pydantic==2.10.4", "python-multipart==0.0.20", "Pillow==11.0.0", "numpy==2.2.1"]
 [project.optional-dependencies]
-dev = ["pytest>=8.0,<9.0", "httpx>=0.27,<0.29", "ruff>=0.6,<0.13"]
+dev = ["pytest==8.3.4", "httpx==0.28.1", "ruff==0.8.4"]
 opencv = ["opencv-python>=4.9,<5.0"]
 # Training/evaluation tooling only (dataset preparation is stdlib-only;
 # these serve the evaluation harness and Marian vocabulary training).
@@ -24,7 +31,10 @@ training = ["sacrebleu>=2.4,<3.0", "sentencepiece>=0.2,<0.3"]
 # does NOT make any historical script supported — support additionally
 # requires a trained checkpoint and a measured evaluation record (see
 # docs/OCR.md).
-kraken = ["kraken>=4.3,<6.0"]
+# Pinned range (AHAIET-041): the adapter's version-tolerant imports
+# target the Kraken 4.x API surface (blla segmentation, load_any,
+# rpred). Widening this range requires re-checking those callables.
+kraken = ["kraken>=4.3,<5.0"]
 [tool.setuptools.packages.find]
 include = ["app*"]
 [tool.pytest.ini_options]

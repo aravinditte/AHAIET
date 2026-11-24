@@ -59,6 +59,24 @@ CREATE TABLE IF NOT EXISTS translation_cache (
   created_at TEXT NOT NULL DEFAULT (datetime('now')));
 CREATE INDEX IF NOT EXISTS idx_translation_cache_profile ON translation_cache(language_profile, engine);
 """),
+    # Remediation work (AHAIET-013/015/016/009): corpus revision counter
+    # for cross-process cache invalidation, an inverted token index for
+    # variant shortlisting, maintenance run records, and job expiry /
+    # cancellation columns. Additive only.
+    (4, """
+CREATE TABLE IF NOT EXISTS corpus_meta (
+  key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS passage_tokens (
+  passage_id TEXT NOT NULL, language_profile TEXT NOT NULL, token TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_passage_tokens ON passage_tokens(language_profile, token);
+CREATE TABLE IF NOT EXISTS maintenance_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  kind TEXT NOT NULL, dry_run INTEGER NOT NULL DEFAULT 0,
+  report_json TEXT, status TEXT NOT NULL DEFAULT 'ok', error TEXT);
+ALTER TABLE jobs ADD COLUMN expires_at TEXT;
+ALTER TABLE jobs ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0;
+"""),
 ]
 PROFILES = [
     ("biblical_hebrew", "Biblical Hebrew", "Hebrew", "profile_defined_models_not_provisioned", "Consonantal and vocalized (niqqud) text; cantillation where present."),
@@ -70,17 +88,41 @@ def connect(db_path: Path) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     return conn
 def migrate(db_path: Path) -> None:
+    """Apply pending migrations, each inside its own explicit
+    transaction (AHAIET-018): the migration SQL and its schema_version
+    row commit together or roll back together, so an interrupted
+    migration never leaves a half-applied schema with no version row.
+    executescript is deliberately not used: it implicitly commits any
+    open transaction before running."""
     conn = connect(db_path)
     try:
+        conn.isolation_level = None  # explicit transaction control
         conn.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')))")
         applied = {r[0] for r in conn.execute("SELECT version FROM schema_version")}
         for version, sql in MIGRATIONS:
-            if version not in applied:
-                conn.executescript(sql)
+            if version in applied:
+                continue
+            statements = [st.strip() for st in sql.split(";") if st.strip()]
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                for st in statements:
+                    conn.execute(st)
                 conn.execute("INSERT INTO schema_version(version) VALUES (?)", (version,))
-        for p in PROFILES:
-            conn.execute("INSERT OR IGNORE INTO language_profiles(id,name,script,status,notes) VALUES (?,?,?,?,?)", p)
-        conn.commit()
+                conn.execute("COMMIT")
+            except Exception:
+                try:
+                    conn.execute("ROLLBACK")
+                except Exception:
+                    pass
+                raise
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            for p in PROFILES:
+                conn.execute("INSERT OR IGNORE INTO language_profiles(id,name,script,status,notes) VALUES (?,?,?,?,?)", p)
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
     finally:
         conn.close()
 def db_ok(db_path: Path) -> bool:

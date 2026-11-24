@@ -367,3 +367,63 @@ prerequisite named.
 
 ## Historical record — foundation build (actually run at that time)
 Recorded when the foundation was built, before the code-only instruction: backend pytest 15 passed; frontend typecheck clean; vitest 2 passed; Next.js build succeeded; live smoke: `/api/health` ok, real PNG upload 200, `/api/translate` honest 503. Tesseract was absent on that machine, so OCR was unavailable — that absence is what the OCR provisioning above addresses.
+
+## Remediation regression cases (code review 2026-11-24) — NOT YET RUN
+
+All cases below exist as code; none has been executed by the build
+assistant. Run from the repo root unless stated.
+
+Backend (from `backend/`): `python -m pytest tests/test_remediation.py -q`
+- test_retrieval_duplicate_exact_is_ambiguous
+- test_nodiac_collision_does_not_verify
+- test_retrieval_cache_invalidated_cross_process
+- test_variant_search_uses_token_index
+- test_preserve_blank_lines
+- test_process_all_segments_failed_terminal
+- test_translate_all_segments_failed_is_422
+- test_job_cancel_endpoint
+- test_persist_results_disabled
+- test_model_hash_mismatch_rejected
+- test_model_card_path_escape_rejected
+- test_missing_best_decoder_tries_second_same_profile
+- test_decoder_empty_output_is_error / test_decoder_multiline_output_is_alignment_error
+- test_ocr_timeout_returns_504
+- test_highlight_second_repeated_word_only
+- test_script_tier_requires_samples_and_dataset
+- test_orientation_reports_not_applied_without_exif
+- test_multipage_image_rejected
+- test_config_validation_rejects_bad_values
+- test_error_detail_is_sanitized
+- test_rate_limiter_bounds_tracked_clients
+- test_migration_is_transactional
+- test_upload_write_is_atomic_and_conflict_checked
+- test_fixture_manifest_is_canonical
+- test_access_token_gates_reads
+- test_translate_lineage_without_ocr_context
+
+Training/evaluation (from repo root):
+`python -m pytest training/tests/test_remediation_training.py -q`
+- test_dictionary_lexicon_train_only
+- test_zero_test_pairs_no_selection / test_one_test_pair_no_selection
+- test_fallback_metric_is_chrf_not_chrf_pp
+- test_selection_requires_comparable_runs
+- test_clean_corpus_misalignment_fails / test_clean_corpus_counts_discards
+- test_marian_checkpoint_selection_uses_best_evidence
+
+Docs: `python backend/tests/check_docs_links.py` (exit 0 = all cited
+paths resolve).
+
+Frontend E2E (from `frontend/`): `npx playwright test e2e/remediation.spec.ts`
+- test_switch_language_invalidates_translation (skips with the missing
+  prerequisite when fixtures/OCR are absent)
+
+Acceptance (provisioned machines only, from `backend/`):
+`python -m pytest tests/test_real_pipeline_acceptance.py -q -m model_required`
+- test_offline_full_real_pipeline (skips with the exact prerequisite
+  when unprovisioned)
+
+Windows smoke (test_windows_setup_smoke): on a Windows machine run
+`scripts\setup-windows.ps1`, then `scripts\provision-ocr.ps1 -Install`,
+then `scripts\start-backend.ps1` and confirm
+`GET /api/capabilities` reports `ocr.tesseract.usable: true`. Not yet
+executed anywhere.

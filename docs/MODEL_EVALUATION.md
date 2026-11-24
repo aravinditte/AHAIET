@@ -95,3 +95,25 @@ reference-match precision are reported, when measured, with dataset,
 partition, date, and the exact command recorded in
 docs/BUILD_STATE.md. Fabricated or copied scores are prohibited by
 docs/PROJECT_CONTRACT.md.
+
+## Evaluation integrity rules (AHAIET-004/005/006)
+
+- **Train-only dictionary baseline.** The baseline lexicon is built
+  ONLY from training-partition rows; test/validation vocabulary can
+  never leak into it. The report records the split name and the corpus
+  sha256 the lexicon came from. The baseline remains a gloss, never a
+  translation.
+- **Minimum test size.** An empty or below-minimum test partition
+  (default minimum 10 pairs, `--min-test-pairs`) yields status
+  `insufficient_test_data`: no scores are computed and
+  `write_selection` refuses to write any selection record.
+- **Comparability.** Every recorded score carries an evaluation-run
+  record: run id, test-set sha256, sample count, metric implementation
+  signature (sacrebleu version + chrF settings, or the pure-Python
+  fallback identifier), artifact sha256, and date. Selection compares
+  ONLY runs with identical test-set sha256 AND identical metric
+  signature. A score whose artifact sha256 no longer matches the
+  artifact on disk is stale: ignored and flagged, never compared.
+- **Fallback metric naming.** The pure-Python fallback is recorded as
+  `chrf` — never `chrf_pp` — and is not comparable with sacrebleu
+  chrF++ runs.

@@ -7,7 +7,11 @@ export interface SourceReference {
   source_edition: string; translation_edition: string; license: string; provenance: string;
   source_text: string; english_text: string; warning?: string; overlap?: number;
 }
-export interface UncertainSpan { text: string; conf: number; line: number; left: number; top: number; width: number; height: number }
+export interface UncertainSpan {
+  text: string; conf: number; line: number; left: number; top: number; width: number; height: number;
+  // AHAIET-028/040: token occurrence identity from TSV order.
+  index?: number; occurrence_id?: string; block?: number; par?: number; line_id?: string;
+}
 export interface OcrResult {
   request_id: string; status: string; original_ocr_text: string;
   uncertain_spans: UncertainSpan[]; mean_confidence: number | null; word_count: number;
@@ -22,14 +26,17 @@ export interface OcrResult {
 export interface ScriptSupport {
   id: string; name: string; script: string; route: string; note?: string;
   status: "supported" | "unsupported"; engine: string | null; reason: string | null;
-  evaluation: { cer: number; wer?: number | null; test_set?: string; evaluated_at?: string } | null;
+  // AHAIET-025: support tiers replace the old binary flag in the UI.
+  tier?: "model_installed" | "experimentally_evaluated" | "production_supported" | "unsupported";
+  evidence?: Record<string, unknown>;
+  evaluation: { cer: number; wer?: number | null; test_set?: string; test_samples?: number | null; dataset_sha256?: string | null; evaluated_at?: string } | null;
   checkpoint: { id: string | null; path: string; sha256: string } | null;
 }
 export interface Capabilities {
   db_ok: boolean;
   upload: { status: string; max_bytes: number; max_pixels: number; formats: string[] };
   preprocessing: { status: string; pillow: boolean; opencv: boolean; profiles: string[]; note: string | null };
-  ocr: { status: string; tesseract: { available: boolean; path: string | null; traineddata: { lang: string; available: boolean; prefix: string | null }; reason: string | null };
+  ocr: { status: string; tesseract: { available: boolean; binary_available?: boolean; language_data_available?: boolean; usable?: boolean; languages?: string[] | null; path: string | null; traineddata: { lang: string; available: boolean; prefix: string | null }; reason: string | null };
     kraken: { available: boolean; reason: string | null; version?: string | null; ketos_cli?: string | null;
       checkpoints?: { id: string | null; script_profile: string | null; path: string; sha256: string }[] };
     scripts?: ScriptSupport[] };
@@ -39,6 +46,9 @@ export interface Capabilities {
     per_profile?: Record<string, { status: string; verified_reference: boolean; engine: string | null;
       evaluation_state: string | null; model_version: string | null }> };
   languages: string[];
+  retention?: { days: number; sweep_on_startup: boolean; last_sweep?: Record<string, unknown> | null; degraded?: boolean };
+  persist_results?: boolean;
+  provisioning_state?: { state: string; checks: Record<string, boolean>; note: string };
 }
 export interface CoverageInfo {
   source_tokens: number; known_tokens: number; coverage_ratio: number; oov_words: string[];
@@ -81,4 +91,13 @@ export interface TranslationResult {
   unevaluated_model?: boolean;
   cached?: boolean;
   stage_timings_ms?: Record<string, number>;
+  // AHAIET-001/002/036 additive fields.
+  text_match?: boolean;
+  passage_identity_verified?: boolean;
+  candidates?: SourceReference[];
+  profile_evidence?: Record<string, unknown> | null;
+}
+export interface JobView {
+  job_id: string; status: string; stage: string; error: string | null;
+  result?: unknown; stage_timings_ms?: Record<string, number>;
 }

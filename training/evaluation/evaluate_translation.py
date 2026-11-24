@@ -41,10 +41,12 @@ Usage:
 """
 from __future__ import annotations
 import argparse
+import hashlib
 import json
 import statistics
 import sys
 import time
+import uuid
 from datetime import date
 from pathlib import Path
 
@@ -60,6 +62,10 @@ from training.common.manifest import load_json, write_json  # noqa: E402
 from training.evaluation import dictionary_baseline, text_metrics  # noqa: E402
 
 PROFILES = ("biblical_hebrew", "biblical_aramaic")
+# AHAIET-005: a held-out test partition smaller than this cannot
+# support a score or a model-selection record. Configurable via
+# --min-test-pairs; the default is documented in docs/MODEL_EVALUATION.md.
+DEFAULT_MIN_TEST_PAIRS = 10
 RETRIEVAL_CAVEAT = ("Retrieval coverage on this split is an upper-bound reference figure: "
                     "the test verses come from the same corpus the retrieval index is built "
                     "from, so a match here does not indicate performance on unseen text.")
@@ -82,14 +88,43 @@ def metric_impl() -> tuple[str, object]:
         return "pure-python fallback (chrF, not chrF++; approximate BLEU)", None
 
 
+def metric_signature(impl) -> str:
+    """Implementation signature recorded with every score
+    (AHAIET-006): scores are comparable only when this string, the
+    test-set sha256, and the sample count all match."""
+    if impl is not None:
+        try:
+            import sacrebleu
+            version = sacrebleu.__version__
+        except Exception:
+            version = "unknown"
+        return f"sacrebleu-{version}:CHRF(word_order=2)+BLEU"
+    return "pure-python-fallback:chrf+approx-bleu"
+
+
+def test_set_sha256(pairs: list[dict]) -> str:
+    material = "\n".join(f"{p.get('source_text','')}\t{p.get('english_text','')}" for p in pairs)
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def corpus_sha256(corpus_path: Path) -> str | None:
+    if not corpus_path.exists():
+        return None
+    return hashlib.sha256(corpus_path.read_bytes()).hexdigest()
+
+
 def score(hypotheses: list[str], references: list[str], impl) -> dict:
     if impl is not None:
         bleu = impl.metrics.BLEU().corpus_score(hypotheses, [references])
         chrf = impl.metrics.CHRF(word_order=2).corpus_score(hypotheses, [references])
         return {"sacrebleu": round(bleu.score, 2), "chrf_pp": round(chrf.score, 2),
-                "chrf_scale": "0-100 (sacrebleu)"}
+                "metric": "chrf_pp", "chrf_scale": "0-100 (sacrebleu chrF++)"}
+    # AHAIET-006: the fallback computes chrF, NOT chrF++. It is recorded
+    # under the key "chrf" with metric "chrf" and is never comparable
+    # with sacrebleu chrF++ scores (different metric signature).
     return {"sacrebleu": round(text_metrics.corpus_bleu(hypotheses, references) * 100, 2),
-            "chrf_pp": round(text_metrics.corpus_chrf(hypotheses, references) * 100, 2),
+            "chrf": round(text_metrics.corpus_chrf(hypotheses, references) * 100, 2),
+            "metric": "chrf",
             "chrf_scale": "0-100 (fallback chrF rescaled; not chrF++)"}
 
 
@@ -152,11 +187,17 @@ def run_engine_adapter(adapter, entry: dict, pairs: list[dict], settings: Settin
             "latency": _latency(latencies), "coverage": _coverage_mean(coverages),
             "model_version": resolution.model_version,
             "artifact_sha256": resolution.artifact_sha256,
+            "evaluation_run": {"run_id": uuid.uuid4().hex,
+                               "test_set_sha256": test_set_sha256(pairs),
+                               "sample_count": len(pairs),
+                               "metric_signature": metric_signature(impl),
+                               "artifact_sha256": resolution.artifact_sha256,
+                               "date": date.today().isoformat()},
             "failures": _failures(pairs, hypotheses, impl)}
 
 
 def evaluate(profile: str, prepared_dir: Path, corpus_path: Path, db_path: Path,
-             settings: Settings) -> dict:
+             settings: Settings, min_test_pairs: int = DEFAULT_MIN_TEST_PAIRS) -> dict:
     pairs = load_test_pairs(prepared_dir, profile, corpus_path)
     impl_name, impl = metric_impl()
     references = [p["english_text"] for p in pairs]
@@ -164,12 +205,35 @@ def evaluate(profile: str, prepared_dir: Path, corpus_path: Path, db_path: Path,
         "profile": profile, "generated_by": "training/evaluation/evaluate_translation.py",
         "date": date.today().isoformat(), "test_pairs": len(pairs),
         "metric_implementation": impl_name,
-        "split": "held-out test partition (Daniel; book-level group split — see dataset card)",
+        "metric_signature": metric_signature(impl),
+        "test_set_sha256": test_set_sha256(pairs),
+        "corpus_sha256": corpus_sha256(corpus_path),
+        "split": "held-out test partition (book-group split — see dataset card)",
         "engines": {},
     }
-    # 1. dictionary/rule baseline
+    # AHAIET-005 gate: an empty or below-minimum test partition yields
+    # NO scores and blocks selection writing entirely.
+    if len(pairs) < min_test_pairs:
+        report["status"] = "insufficient_test_data"
+        report["reason"] = (f"held-out test partition has {len(pairs)} pair(s); the configured "
+                            f"minimum is {min_test_pairs} (--min-test-pairs). No scores were "
+                            "computed and no model selection may be written from this run.")
+        for name in ("dictionary_gloss_baseline", "moses", "marian", "retrieval"):
+            report["engines"][name] = {"status": "insufficient_test_data",
+                                       "reason": report["reason"]}
+        return report
+    report["status"] = "evaluated"
+    # 1. dictionary/rule baseline — lexicon built ONLY from the
+    # training partition (AHAIET-004); split + corpus hash recorded.
     if corpus_path.exists() and pairs:
-        lexicon = dictionary_baseline.load_lexicon_from_corpus(corpus_path, profile)
+        lexicon = dictionary_baseline.load_lexicon_from_corpus(corpus_path, profile,
+                                                               partitions={"train"})
+        report["dictionary_baseline"] = {
+            "lexicon_partitions": ["train"],
+            "corpus_sha256": report["corpus_sha256"],
+            "caveat": ("The dictionary baseline's lexicon is built only from training-partition "
+                       "rows; held-out test vocabulary is out-of-vocabulary for it by "
+                       "construction. " + dictionary_baseline.LABEL + ".")}
         hypotheses, coverages, latencies = [], [], []
         for pair in pairs:
             start = time.perf_counter()
@@ -179,6 +243,7 @@ def evaluate(profile: str, prepared_dir: Path, corpus_path: Path, db_path: Path,
             coverages.append(info)
         report["engines"]["dictionary_gloss_baseline"] = {
             "label": dictionary_baseline.LABEL, "status": "evaluated",
+            "lexicon_partitions": ["train"], "corpus_sha256": report["corpus_sha256"],
             "metrics": score(hypotheses, references, impl), "latency": _latency(latencies),
             "coverage": _coverage_mean(coverages), "failures": _failures(pairs, hypotheses, impl)}
     else:
@@ -222,12 +287,24 @@ def evaluate(profile: str, prepared_dir: Path, corpus_path: Path, db_path: Path,
 
 
 def write_selection(report: dict, settings: Settings) -> dict | None:
-    """Record the winning trained engine in its model card + manifest."""
+    """Record the winning trained engine in its model card + manifest.
+
+    Refuses (returns None and writes nothing) when the report is gated
+    insufficient_test_data (AHAIET-005), and compares only scores that
+    carry an evaluation-run record with THIS report's test-set sha256
+    and metric signature and a chrF++ value (AHAIET-006): fallback chrF
+    scores are not comparable and can never drive selection."""
+    if report.get("status") == "insufficient_test_data":
+        return None
     candidates = []
     for engine in ("moses", "marian"):
         result = report["engines"].get(engine, {})
-        if result.get("status") == "evaluated" and result.get("metrics"):
-            candidates.append((engine, result["metrics"]["chrf_pp"]))
+        run = result.get("evaluation_run") or {}
+        metrics = result.get("metrics") or {}
+        if (result.get("status") == "evaluated" and metrics.get("chrf_pp") is not None
+                and run.get("test_set_sha256") == report.get("test_set_sha256")
+                and run.get("metric_signature") == report.get("metric_signature")):
+            candidates.append((engine, metrics["chrf_pp"]))
     if not candidates:
         return None
     winner, winner_chrf = max(candidates, key=lambda c: c[1])
@@ -240,10 +317,21 @@ def write_selection(report: dict, settings: Settings) -> dict | None:
                               "value": winner_chrf if is_winner else None,
                               "date": report["date"],
                               "evaluated_by": "training/evaluation/evaluate_translation.py",
-                              "test_pairs": report["test_pairs"]}
+                              "test_pairs": report["test_pairs"],
+                              "run": report["engines"][winner].get("evaluation_run")}
+        # Stale-metric hygiene: a previous evaluation record that does
+        # not belong to this run's test set is versioned aside, never
+        # left in place to be read as current (AHAIET-006).
+        old_eval = entry.get("evaluation")
+        if isinstance(old_eval, dict):
+            old_run = old_eval.get("run") or {}
+            if old_run.get("test_set_sha256") != report.get("test_set_sha256"):
+                entry["evaluation_stale"] = old_eval
+                entry.pop("evaluation", None)
         if is_winner:
             entry["evaluation"] = {"chrf_pp": winner_chrf, "date": report["date"],
-                                   "test_pairs": report["test_pairs"]}
+                                   "test_pairs": report["test_pairs"],
+                                   "run": report["engines"][winner].get("evaluation_run")}
             resolution = model_artifacts.resolve_entry(entry)
             if resolution.artifact_dir is not None:
                 card_path = resolution.artifact_dir / "model_card.json"
@@ -253,6 +341,7 @@ def write_selection(report: dict, settings: Settings) -> dict | None:
                                        "sacrebleu": report["engines"][winner]["metrics"]["sacrebleu"],
                                        "metric_implementation": report["metric_implementation"],
                                        "test_pairs": report["test_pairs"], "date": report["date"]}
+                    card["evaluation_run"] = report["engines"][winner].get("evaluation_run")
                     card["selection"] = entry["selection"]
                     write_json(card_path, card)
     write_json(settings.models_manifest, manifest)
@@ -275,7 +364,7 @@ def render_markdown(report: dict, selection_record: dict | None) -> str:
             cov = result.get("coverage") or {}
             cov_text = (f"match rate {cov['match_rate']}" if "match_rate" in cov
                         else f"{cov.get('coverage_ratio', '—')}")
-            lines.append(f"| {name} | evaluated | {m['sacrebleu']} | {m['chrf_pp']} | "
+            lines.append(f"| {name} | evaluated | {m['sacrebleu']} | {m.get('chrf_pp', m.get('chrf'))} | "
                          f"{result['latency']['mean_ms']} / {result['latency']['p95_ms']} | {cov_text} |")
         else:
             lines.append(f"| {name} | unavailable | — | — | — | {result.get('reason', '')} |")
@@ -319,9 +408,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out-dir", type=Path, default=REPO_ROOT / "artifacts" / "benchmarks")
     ap.add_argument("--no-write-selection", action="store_true",
                     help="do not write the winning-engine record into model cards/manifest")
+    ap.add_argument("--min-test-pairs", type=int, default=DEFAULT_MIN_TEST_PAIRS,
+                    help="minimum held-out test pairs required before any score or "
+                         "selection is produced (AHAIET-005 gate)")
     args = ap.parse_args(argv)
     settings = Settings.from_env()
-    report = evaluate(args.profile, args.prepared_dir, args.corpus, args.db, settings)
+    report = evaluate(args.profile, args.prepared_dir, args.corpus, args.db, settings,
+                      min_test_pairs=args.min_test_pairs)
     selection_record = None
     if not args.no_write_selection:
         selection_record = write_selection(report, settings)
@@ -334,7 +427,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"wrote {json_path}\nwrote {md_path}")
     for name, result in report["engines"].items():
         print(f"  {name}: {result.get('status')}"
-              + (f" (chrF++ {result['metrics']['chrf_pp']})" if result.get("metrics") else
+              + (f" (chrF++ {result['metrics']['chrf_pp']})" if result.get("metrics", {}).get("chrf_pp") is not None else
                  f" — {result.get('reason', '')}"))
     return 0
 

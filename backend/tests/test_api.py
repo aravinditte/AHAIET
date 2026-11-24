@@ -71,9 +71,22 @@ def test_process_job_fails_honestly_when_ocr_missing(client):
         return
     up = client.post("/api/uploads", files={"file": ("p.png", png_bytes(), "image/png")}).json()
     r = client.post("/api/process", json={"upload_id": up["id"]})
-    assert r.status_code == 200
-    job = client.get(f"/api/jobs/{r.json()['job_id']}").json()
+    # Contract change (AHAIET-009): /api/process is asynchronous —
+    # 202 with a queued job; poll until the job reaches a terminal state.
+    assert r.status_code == 202
+    job = _poll_job(client, r.json()["job_id"])
     assert job["status"] == "failed" and job["error"]
+
+
+def _poll_job(client, job_id, timeout_s=10.0):
+    import time as _time
+    deadline = _time.monotonic() + timeout_s
+    while True:
+        job = client.get(f"/api/jobs/{job_id}").json()
+        if job["status"] in ("completed", "partial", "failed", "cancelled", "expired"):
+            return job
+        assert _time.monotonic() < deadline, f"job {job_id} never reached a terminal state"
+        _time.sleep(0.05)
 
 def test_unknown_job_404(client):
     assert client.get("/api/jobs/does-not-exist").status_code == 404

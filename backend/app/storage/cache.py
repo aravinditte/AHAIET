@@ -31,7 +31,9 @@ def cache_key(language_profile: str, source_text: str, engine: str,
 
 
 def get(settings: Settings, key: str) -> dict | None:
-    if not settings.translation_cache_enabled:
+    # AHAIET-015: with persist_results off, nothing is read from or
+    # written to the durable cache — translations are not persisted.
+    if not settings.translation_cache_enabled or not settings.persist_results:
         return None
     if not Path(settings.db_path).exists():
         return None
@@ -53,7 +55,7 @@ def get(settings: Settings, key: str) -> dict | None:
 
 def put(settings: Settings, key: str, language_profile: str, engine: str,
         artifact_sha256: str | None, payload: dict) -> None:
-    if not settings.translation_cache_enabled:
+    if not settings.translation_cache_enabled or not settings.persist_results:
         return
     conn = store.connect(settings.db_path)
     try:

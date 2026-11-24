@@ -97,3 +97,52 @@ about public-domain corpus data. Two guardrails keep it that way:
   directory. Disk encryption is the operating system's job.
 - **SQLite file permissions** follow the OS defaults of the data
   directory; restrict the directory if the machine is shared.
+
+## Persistence settings: persist_results vs history_enabled (AHAIET-015)
+
+Two independent switches:
+
+| Setting | Controls | Off behaviour |
+|---|---|---|
+| `AHAIET_PERSIST_RESULTS` (default on) | Durability of jobs, job results, and the translation cache | Jobs are in-memory ephemeral with a TTL (`AHAIET_JOB_RESULT_TTL_S`); **no source or translation text is written to SQLite** (asserted by `test_persist_results_disabled` in `backend/tests/test_remediation.py`); the translation cache is disabled |
+| `AHAIET_HISTORY_ENABLED` (default on) | The `/api/history` record of completed jobs | History writes are no-ops and `GET /api/history` returns an explicit disabled state |
+
+Turning history off alone does NOT stop job persistence; turning
+persistence off also disables history (there is nothing durable to
+list). Uploads are always stored (they are the working input) and are
+covered by retention below.
+
+## Scheduled retention (AHAIET-016/017)
+
+The startup sweep (`AHAIET_RETENTION_SWEEP_ON_STARTUP`) remains
+available but is no longer the recommended mechanism: schedule the
+sweep instead.
+
+- Windows: `scripts\install-retention-task.ps1` registers a daily
+  Task Scheduler task running `python -m app.maintenance`.
+- Linux: a systemd timer or a cron line running the same module from
+  `backend/` once a day.
+
+Every sweep records a row in the `maintenance_runs` table; the latest
+is exposed at `GET /api/capabilities` -> `retention.last_sweep`. A
+startup sweep that fails is logged structurally and sets
+`retention.degraded: true` in capabilities — it is never silently
+swallowed, and it never blocks startup.
+
+## Local-only posture and the access token (AHAIET-045)
+
+The backend binds to loopback by default; keep it that way
+(`AHAIET_BIND` / the uvicorn `--host` in the start scripts stays
+`127.0.0.1`). An upload id is a content hash: it is a **locator, not
+an authorization credential** — anyone who learns an id can fetch that
+image in local mode. That is acceptable for a single-operator local
+tool and nothing else. If the service is ever exposed beyond loopback,
+set `AHAIET_ACCESS_TOKEN`: upload reads (`GET /api/uploads/{id}`) and
+history (`GET /api/history`) then require the
+`X-AHAIET-Access-Token` header. For real remote deployment, put the
+service behind external authentication as well; the token is a
+minimal local safeguard, not an auth system.
+
+Error responses are sanitized (AHAIET-031): adapter and engine errors
+never include absolute system paths or unbounded binary stderr — only
+a bounded, path-stripped excerpt.

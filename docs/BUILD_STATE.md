@@ -64,3 +64,31 @@ Pytest, vitest, typecheck, build, and the OCR measurement for the OCR/corpus cod
 | CI workflows | written; not run | .github/workflows/ci.yml (always-on: ruff + compileall + pytest -m "not model_required"; frontend typecheck/vitest/build) and model-tests.yml (workflow_dispatch: Tesseract + corpus import + full suite + evaluation harness report-only). If the GitHub App cannot push workflow files, the owner adds these two files manually via the web UI (see docs/PHASE_HANDOFF.md) |
 | Docs | written | docs/SECURITY.md, OFFLINE_OPERATION.md (expanded), TROUBLESHOOTING.md, ACCEPTANCE_AUDIT.md (14 implemented / 5 blocked / 0 not-yet-implemented, from repo state), RELEASE.md (scope, readiness table from manifests, Windows sequence); contract gained the runtime-network and workflow-file invariants |
 | Manifests | unchanged statuses | consistency pass only: no entry became provisioned; tesseract-heb remains traineddata_downloaded_binary_missing; all translation/Kraken entries not_provisioned |
+
+## Remediation build (code review of 2026-11-24) — code only, not run
+
+All 56 review findings were addressed in code; per the project testing
+rule nothing was executed by the build assistant (py_compile and the
+corpus data-prep parse excepted). Per-finding status:
+docs/PHASE_HANDOFF.md (remediation section).
+
+Changed behaviour highlights:
+
+- Corpus: Ezra added (sha256 in artifacts/manifests/datasets.json);
+  book-group partitions; NEW recorded parse: **2,170 verses, 2,165
+  aligned English, Hebrew 1,903 / Aramaic 267, 0 duplicates, 0
+  validation errors, 0 cross-split duplicates**. This supersedes the
+  1,890-verse figures in the table above, which describe the earlier
+  parse. Hebrew test partition is now empty by design of the split.
+- /api/process is asynchronous (202 + polling + cancel); jobs run on a
+  bounded executor with a state machine, expiry, and startup recovery.
+- Retrieval never verifies an ambiguous match; profile choice is
+  explicit; evaluation selection is comparability-gated.
+- New settings: AHAIET_PERSIST_RESULTS, job workers/deadline/TTL,
+  concurrency caps, AHAIET_ACCESS_TOKEN, OCR timeout, script-tier
+  minimum samples. New DB migration v4 (corpus_meta, passage_tokens,
+  maintenance_runs, job expiry/cancel columns).
+- Tests as code: backend/tests/test_remediation.py,
+  training/tests/test_remediation_training.py,
+  backend/tests/test_real_pipeline_acceptance.py (model_required),
+  backend/tests/check_docs_links.py, frontend/e2e/remediation.spec.ts.

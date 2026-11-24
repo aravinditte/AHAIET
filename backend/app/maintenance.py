@@ -149,7 +149,31 @@ def run_retention(settings: Settings, dry_run: bool = False,
         "translation_cache_deleted": _sweep_table(settings, "translation_cache", cutoff, dry_run),
         "secure_delete_overwrite": settings.secure_delete_overwrite,
     }
+    _record_run(settings, report, status="ok", error=None)
     return report
+
+
+def _record_run(settings: Settings, report: dict, status: str,
+                error: str | None) -> None:
+    """Persist the sweep outcome in maintenance_runs (AHAIET-016/017)
+    so /api/capabilities can expose the last sweep and its failures.
+    Best-effort: recording must never mask the sweep's own result."""
+    db_path = Path(settings.db_path)
+    if not db_path.exists():
+        return
+    try:
+        conn = store.connect(db_path)
+        try:
+            conn.execute(
+                "INSERT INTO maintenance_runs(kind, dry_run, report_json, status, error) "
+                "VALUES ('retention', ?, ?, ?, ?)",
+                (1 if report.get("dry_run") else 0,
+                 json.dumps(report), status, error))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
 
 
 def main(argv: list[str] | None = None) -> int:

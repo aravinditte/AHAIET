@@ -106,21 +106,39 @@ def clean_corpus(logger: Logger, src: Path, tgt: Path, out_prefix: Path,
                  min_len: int = 1, max_len: int = 80, max_ratio: float = 3.0) -> int:
     """Repository equivalent of Moses clean-corpus-n.perl length/ratio
     filtering, used (and logged) when the Moses scripts are absent."""
-    kept_src, kept_tgt, dropped = [], [], 0
-    for s_line, t_line in zip(src.read_text(encoding="utf-8").splitlines(),
-                              tgt.read_text(encoding="utf-8").splitlines()):
+    src_lines = src.read_text(encoding="utf-8").splitlines()
+    tgt_lines = tgt.read_text(encoding="utf-8").splitlines()
+    # AHAIET-049: never zip-truncate silently. Unequal line counts are
+    # a hard alignment failure; every discarded pair is counted with
+    # its reason and line number in the training log.
+    if len(src_lines) != len(tgt_lines):
+        raise StepError(
+            f"clean-corpus: source has {len(src_lines)} lines but target has "
+            f"{len(tgt_lines)} lines — the parallel corpus is misaligned and "
+            "cleaning refuses to drop the excess silently.")
+    kept_src, kept_tgt = [], []
+    dropped: dict[str, int] = {}
+    for i, (s_line, t_line) in enumerate(zip(src_lines, tgt_lines), start=1):
         ns, nt = len(s_line.split()), len(t_line.split())
-        if not (min_len <= ns <= max_len and min_len <= nt <= max_len):
-            dropped += 1
-            continue
-        if max(ns, nt) / max(min(ns, nt), 1) > max_ratio:
-            dropped += 1
+        reason = None
+        if ns == 0 and nt == 0:
+            reason = "both_blank"
+        elif ns == 0 or nt == 0:
+            reason = "one_side_blank"
+        elif not (min_len <= ns <= max_len and min_len <= nt <= max_len):
+            reason = "length_out_of_bounds"
+        elif max(ns, nt) / max(min(ns, nt), 1) > max_ratio:
+            reason = "length_ratio"
+        if reason:
+            dropped[reason] = dropped.get(reason, 0) + 1
+            logger.log(f"clean-corpus: dropped line {i} ({reason})")
             continue
         kept_src.append(s_line)
         kept_tgt.append(t_line)
     Path(str(out_prefix) + ".src").write_text("".join(l + "\n" for l in kept_src), encoding="utf-8")
     Path(str(out_prefix) + ".en").write_text("".join(l + "\n" for l in kept_tgt), encoding="utf-8")
-    logger.log(f"clean-corpus (repository filter): kept {len(kept_src)}, dropped {dropped}")
+    logger.log(f"clean-corpus (repository filter): kept {len(kept_src)}, "
+               f"dropped {sum(dropped.values())} by reason {dropped}")
     return len(kept_src)
 
 
@@ -179,6 +197,44 @@ def export_model(logger: Logger, profile: str, work: Path, final_ini: Path,
         ini_text = ini_text.replace(old, new)
     ini_dest = artifact_dir / "moses.ini"
     ini_dest.write_text(ini_text, encoding="utf-8")
+    # Export verification (AHAIET-050): parse every path referenced by
+    # the exported moses.ini and verify each file exists INSIDE the
+    # export directory. The report is written next to the artifact;
+    # any unresolved reference fails the export loudly.
+    import re as _re
+    unresolved: list[str] = []
+    resolved: list[str] = []
+    for raw_line in ini_text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        for token in _re.split(r"\s+", line):
+            token = token.strip()
+            if not token or token.startswith("-"):
+                continue
+            looks_like_path = ("/" in token or "\\" in token or token.endswith(
+                (".gz", ".binary", ".arpa", ".ini", ".txt", ".bin")))
+            if not looks_like_path:
+                continue
+            candidate = (artifact_dir / token).resolve() if not Path(token).is_absolute() \
+                else Path(token).resolve()
+            if artifact_dir.resolve() in candidate.parents or candidate == artifact_dir.resolve():
+                if candidate.exists():
+                    resolved.append(token)
+                else:
+                    unresolved.append(token)
+            elif not candidate.exists():
+                unresolved.append(token)
+    report_path = artifact_dir / "export_verification.json"
+    import json as _json
+    report_path.write_text(_json.dumps(
+        {"moses_ini": "moses.ini", "resolved": sorted(set(resolved)),
+         "unresolved": sorted(set(unresolved))}, indent=2), encoding="utf-8")
+    if unresolved:
+        raise StepError(
+            "SMT export verification failed: moses.ini references files that do not "
+            f"resolve inside the export directory: {sorted(set(unresolved))}. "
+            f"See {report_path}.")
     vocab_src = prepared_dir / profile / "vocabulary.source.txt"
     files = [describe_file(ini_dest, "config")]
     for p in copied:

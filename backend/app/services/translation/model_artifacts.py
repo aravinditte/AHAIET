@@ -59,6 +59,11 @@ class ArtifactResolution:
     artifact_sha256: str | None = None
     model_version: str | None = None
     chrf_pp: float | None = None
+    # AHAIET-019/006: per-file verification results, the evaluation-run
+    # record accompanying any recorded score, and staleness flags.
+    file_checks: list = field(default_factory=list)
+    evaluation_run: dict | None = None
+    stale_metric: bool = False
 
     @property
     def engine(self) -> str | None:
@@ -78,6 +83,9 @@ class ArtifactResolution:
             "model_version": self.model_version, "artifact_sha256": self.artifact_sha256,
             "chrf_pp": self.chrf_pp,
             "selection": self.entry.get("selection"),
+            "file_checks": self.file_checks,
+            "evaluation_run": self.evaluation_run,
+            "stale_metric": self.stale_metric,
         }
 
 
@@ -115,12 +123,54 @@ def _card_files_by_role(card: dict | None) -> dict[str, list[str]]:
 
 
 def _recorded_chrf(entry: dict, card: dict | None) -> float | None:
+    """Recorded chrF++ only. A pure-Python fallback chrF value is stored
+    under the key "chrf" (never "chrf_pp") by the evaluation harness and
+    is deliberately NOT read here (AHAIET-006)."""
     for source in ((card or {}).get("metrics") or {}, entry.get("evaluation") or {},
                    (entry.get("selection") or {})):
         value = source.get("chrf_pp")
         if isinstance(value, (int, float)):
             return float(value)
     return None
+
+
+def evaluation_run_of(entry: dict, card: dict | None) -> dict | None:
+    """The evaluation-run record that must accompany a recorded score
+    for the score to be comparable (AHAIET-006): run id, test-set
+    sha256, sample count, metric implementation signature, artifact
+    sha256, date. Looked for on the model card first, then the
+    manifest entry's evaluation record."""
+    for source in ((card or {}).get("evaluation_run"),
+                   (entry.get("evaluation") or {}).get("run"),
+                   entry.get("evaluation_run")):
+        if isinstance(source, dict) and source.get("test_set_sha256") \
+                and source.get("metric_signature"):
+            return source
+    return None
+
+
+# Resolution cache (AHAIET-019): keyed by the artifact directory plus a
+# signature of the model card and every card-listed file (mtime + size)
+# and the manifest entry itself, so editing any of them re-resolves.
+_resolution_cache: dict[str, tuple[str, "ArtifactResolution"]] = {}
+
+
+def _resolution_signature(entry: dict, artifact_dir: Path) -> str:
+    import hashlib as _h
+    parts = [json.dumps(entry, sort_keys=True, default=str)]
+    card_path = artifact_dir / "model_card.json"
+    watched = [card_path]
+    card = _load_card(artifact_dir)
+    for f in (card or {}).get("files", []) or []:
+        if f.get("path"):
+            watched.append(artifact_dir / f["path"])
+    for path in watched:
+        try:
+            st = path.stat()
+            parts.append(f"{path.name}:{st.st_mtime_ns}:{st.st_size}")
+        except OSError:
+            parts.append(f"{path.name}:absent")
+    return _h.sha256("|".join(parts).encode("utf-8")).hexdigest()
 
 
 def resolve_entry(entry: dict) -> ArtifactResolution:
@@ -138,15 +188,55 @@ def resolve_entry(entry: dict) -> ArtifactResolution:
         return ArtifactResolution(entry=entry, ok=False, artifact_dir=artifact_dir,
                                   missing=[f"artifact directory does not exist: {artifact_dir}"],
                                   evaluation_state="provisioned_missing_files")
+    # Resolution cache: identical signature -> identical verdict.
+    cache_key = str(artifact_dir)
+    signature = _resolution_signature(entry, artifact_dir)
+    cached_resolution = _resolution_cache.get(cache_key)
+    if cached_resolution and cached_resolution[0] == signature:
+        return cached_resolution[1]
     card = _load_card(artifact_dir)
     missing: list[str] = []
+    file_checks: list[dict] = []
     if card is None:
         missing.append("model_card.json (written by the training run; required for provenance)")
     else:
+        base = artifact_dir.resolve()
         for f in card.get("files", []) or []:
             rel = f.get("path")
-            if rel and not (artifact_dir / rel).exists():
+            if not rel:
+                continue
+            target = (artifact_dir / rel)
+            # Path traversal: a card-listed file must stay inside the
+            # artifact directory (AHAIET-019).
+            try:
+                resolved = target.resolve()
+            except OSError:
+                resolved = target
+            if resolved != base and base not in resolved.parents:
+                missing.append(f"model card file escapes the artifact directory: {rel}")
+                file_checks.append({"path": rel, "ok": False, "reason": "path_escape"})
+                continue
+            if not target.exists():
                 missing.append(f"model card file missing: {rel}")
+                file_checks.append({"path": rel, "ok": False, "reason": "missing"})
+                continue
+            # Recompute SHA-256 + size and compare with the values the
+            # model card recorded at export time, when it recorded
+            # them (real training exports always do, via describe_file).
+            check: dict = {"path": rel, "ok": True}
+            actual_size = target.stat().st_size
+            if f.get("size_bytes") is not None and int(f["size_bytes"]) != actual_size:
+                check.update(ok=False, reason="size_mismatch",
+                             recorded_size=f["size_bytes"], actual_size=actual_size)
+                missing.append(f"model card file size mismatch: {rel}")
+            if f.get("sha256"):
+                actual_sha = _sha256_file(target)
+                if actual_sha != f["sha256"]:
+                    check.update(ok=False, reason="sha256_mismatch")
+                    missing.append(f"model card file checksum mismatch: {rel}")
+                else:
+                    check["sha256"] = actual_sha
+            file_checks.append(check)
     by_role = _card_files_by_role(card)
     essentials = _MOSES_ESSENTIALS if entry.get("engine") == "moses" else _MARIAN_ESSENTIALS
     for piece, roles, globs in essentials:
@@ -163,17 +253,37 @@ def resolve_entry(entry: dict) -> ArtifactResolution:
         if not found:
             missing.append(piece)
     chrf = _recorded_chrf(entry, card)
-    state = "evaluated" if chrf is not None else "trained_but_not_evaluated"
     sha = (card or {}).get("artifact_sha256") or entry.get("checksum")
     if not sha:
         # Fall back to hashing the engine's primary configuration/checkpoint.
         primary = artifact_dir / ("moses.ini" if entry.get("engine") == "moses" else "model.npz")
         if primary.exists():
             sha = _sha256_file(primary)
+    # Verify the recorded primary-artifact checksum itself when the
+    # card names its primary file (AHAIET-019).
+    primary_name = (card or {}).get("primary_artifact")
+    recorded_sha = (card or {}).get("artifact_sha256")
+    if primary_name and recorded_sha and (artifact_dir / primary_name).exists():
+        if _sha256_file(artifact_dir / primary_name) != recorded_sha:
+            missing.append(f"primary artifact checksum mismatch: {primary_name}")
+    # Stale metrics (AHAIET-006): a score whose evaluation run recorded
+    # a different artifact hash than the artifact now on disk is
+    # ignored for ranking and flagged, never silently trusted.
+    run_record = evaluation_run_of(entry, card)
+    stale = False
+    if run_record and run_record.get("artifact_sha256") and sha \
+            and run_record["artifact_sha256"] != sha:
+        stale = True
+        chrf = None
+    state = "evaluated" if chrf is not None else "trained_but_not_evaluated"
     version = (card or {}).get("model_version") or entry.get("version")
-    return ArtifactResolution(entry=entry, ok=not missing, artifact_dir=artifact_dir,
+    resolution = ArtifactResolution(entry=entry, ok=not missing, artifact_dir=artifact_dir,
                               missing=missing, card=card, evaluation_state=state,
-                              artifact_sha256=sha, model_version=version, chrf_pp=chrf)
+                              artifact_sha256=sha, model_version=version, chrf_pp=chrf,
+                              file_checks=file_checks, evaluation_run=run_record,
+                              stale_metric=stale)
+    _resolution_cache[cache_key] = (signature, resolution)
+    return resolution
 
 
 def card_file(resolution: ArtifactResolution, roles: tuple[str, ...],

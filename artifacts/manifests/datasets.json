@@ -1,1 +1,110 @@
-{"datasets":[{"downloaded":"2026-11-24","id":"morphhb-wlc-genesis","language_profiles":["biblical_hebrew"],"license":"WLC text: Public Domain; morphhb annotations: CC BY 4.0","local_path":"artifacts/corpora/morphhb/Gen.xml","name":"Open Scriptures Hebrew Bible (morphhb) — WLC Genesis, OSIS XML","partition_strategy":"Book/chapter blocks: Genesis chapters 1-25 train, 26-50 validation (no random verse-level split)","sha256":"0526e5c9a5fb4d907847645f954ed3d1268fa69decbd872056cedd2668d86449","source_edition":"Westminster Leningrad Codex (WLC) via Open Scriptures morphhb (OSHB)","url":"https://raw.githubusercontent.com/openscriptures/morphhb/master/wlc/Gen.xml"},{"downloaded":"2026-11-24","id":"morphhb-wlc-daniel","language_assignment":"Documented Biblical Aramaic range Daniel 2:4b-7:28 assigned biblical_aramaic; remaining Daniel verses biblical_hebrew. Word-level language flags come from morphhb morph-code prefixes (H/A). Daniel 2:4 straddles the boundary: its opening narration words carry Hebrew flags inside an Aramaic-range verse.","language_profiles":["biblical_hebrew","biblical_aramaic"],"license":"WLC text: Public Domain; morphhb annotations: CC BY 4.0","local_path":"artifacts/corpora/morphhb/Dan.xml","name":"Open Scriptures Hebrew Bible (morphhb) — WLC Daniel, OSIS XML","partition_strategy":"Daniel is held out as the test partition (book-level)","sha256":"bc69d0fa9708dacb11ea6d587509250bf1bcc1b4343eac2d6e97f8b41518fc0d","source_edition":"Westminster Leningrad Codex (WLC) via Open Scriptures morphhb (OSHB)","url":"https://raw.githubusercontent.com/openscriptures/morphhb/master/wlc/Dan.xml"},{"alignment":"By book/chapter/verse key against the morphhb verses. Verses whose numbering differs between WLC and WEB (Genesis 32:33; Daniel 3:31-33; Daniel 6:29) have no aligned English and are imported with english_text empty rather than misaligned.","downloaded":"2026-11-24","id":"web-vpl","language_profiles":["biblical_hebrew","biblical_aramaic"],"license":"Public Domain","local_path":"artifacts/corpora/eng-web_vpl.zip","name":"World English Bible — verse-per-line text (eBible.org)","sha256":"88308b1c50ec3a536175b29ca96e82602a1f2d7c8ce6aadeb9824a4464f4565c","translation_edition":"World English Bible (WEB)","url":"https://ebible.org/Scriptures/eng-web_vpl.zip"}],"generated_for":"Corpus retrieval work: real downloaded sources with checksums and licences. Corpus data files live outside source control (artifacts/corpora/ is gitignored); this manifest is the provenance record. Counts below come from the importer's parse report at download time (data preparation, not a quality measurement).","import_report":{"aligned_english":1885,"by_language":{"biblical_aramaic":200,"biblical_hebrew":1690},"duplicates_skipped":0,"note":"Parse counts recorded when the importer ran as data preparation. Database import (--import-db) and all test suites are run by the developer; see docs/VERIFICATION.md.","tool":"backend: python -m app.corpus.import_morphhb","validation_errors":[],"verses_parsed":1890,"verses_without_english":["Genesis 32:33","Daniel 3:31","Daniel 3:32","Daniel 3:33","Daniel 6:29"]}}
+{
+  "datasets": [
+    {
+      "downloaded": "2026-11-24",
+      "id": "morphhb-wlc-genesis",
+      "language_profiles": [
+        "biblical_hebrew"
+      ],
+      "license": "WLC text: Public Domain; morphhb annotations: CC BY 4.0",
+      "local_path": "artifacts/corpora/morphhb/Gen.xml",
+      "name": "Open Scriptures Hebrew Bible (morphhb) — WLC Genesis, OSIS XML",
+      "partition_strategy": "Book/chapter blocks: Genesis chapters 1-25 train, 26-50 validation (no random verse-level split)",
+      "sha256": "0526e5c9a5fb4d907847645f954ed3d1268fa69decbd872056cedd2668d86449",
+      "source_edition": "Westminster Leningrad Codex (WLC) via Open Scriptures morphhb (OSHB)",
+      "url": "https://raw.githubusercontent.com/openscriptures/morphhb/master/wlc/Gen.xml"
+    },
+    {
+      "downloaded": "2026-11-24",
+      "id": "morphhb-wlc-daniel",
+      "language_assignment": "Documented Biblical Aramaic range Daniel 2:4b-7:28 assigned biblical_aramaic; remaining Daniel verses biblical_hebrew. Word-level language flags come from morphhb morph-code prefixes (H/A). Daniel 2:4 straddles the boundary: its opening narration words carry Hebrew flags inside an Aramaic-range verse.",
+      "language_profiles": [
+        "biblical_hebrew",
+        "biblical_aramaic"
+      ],
+      "license": "WLC text: Public Domain; morphhb annotations: CC BY 4.0",
+      "local_path": "artifacts/corpora/morphhb/Dan.xml",
+      "name": "Open Scriptures Hebrew Bible (morphhb) — WLC Daniel, OSIS XML",
+      "partition_strategy": "Daniel Hebrew is assigned to validation; Daniel Aramaic is the held-out test partition (book-level, per language profile)",
+      "sha256": "bc69d0fa9708dacb11ea6d587509250bf1bcc1b4343eac2d6e97f8b41518fc0d",
+      "source_edition": "Westminster Leningrad Codex (WLC) via Open Scriptures morphhb (OSHB)",
+      "url": "https://raw.githubusercontent.com/openscriptures/morphhb/master/wlc/Dan.xml"
+    },
+    {
+      "alignment": "By book/chapter/verse key against the morphhb verses. Verses whose numbering differs between WLC and WEB (Genesis 32:33; Daniel 3:31-33; Daniel 6:29) have no aligned English and are imported with english_text empty rather than misaligned.",
+      "downloaded": "2026-11-24",
+      "id": "web-vpl",
+      "language_profiles": [
+        "biblical_hebrew",
+        "biblical_aramaic"
+      ],
+      "license": "Public Domain",
+      "local_path": "artifacts/corpora/eng-web_vpl.zip",
+      "name": "World English Bible — verse-per-line text (eBible.org)",
+      "sha256": "88308b1c50ec3a536175b29ca96e82602a1f2d7c8ce6aadeb9824a4464f4565c",
+      "translation_edition": "World English Bible (WEB)",
+      "url": "https://ebible.org/Scriptures/eng-web_vpl.zip"
+    },
+    {
+      "downloaded": "2026-11-24",
+      "id": "morphhb-wlc-ezra",
+      "language_assignment": "Documented Biblical Aramaic ranges Ezra 4:8-6:18 and 7:12-26 assigned biblical_aramaic; remaining Ezra verses biblical_hebrew. Word-level language flags come from morphhb morph-code prefixes (H/A).",
+      "language_profiles": [
+        "biblical_hebrew",
+        "biblical_aramaic"
+      ],
+      "license": "WLC text: Public Domain; morphhb annotations: CC BY 4.0",
+      "local_path": "artifacts/corpora/morphhb/Ezra.xml",
+      "name": "Open Scriptures Hebrew Bible (morphhb) — WLC Ezra, OSIS XML",
+      "note": "The morphhb file is named Ezra.xml (not Ezr.xml). Downloaded and parsed as data preparation for the AHAIET-008 remediation.",
+      "partition_strategy": "Ezra is assigned to the train partition for both languages (book-group split): an independent book supplying Biblical Aramaic training material while Daniel remains the held-out book for Aramaic test data.",
+      "sha256": "fb28ff697d0ee17eba5b4db47fb7261ee1870cea0d5701bfc77c9e28d4138129",
+      "source_edition": "Westminster Leningrad Codex (WLC) via Open Scriptures morphhb (OSHB)",
+      "url": "https://raw.githubusercontent.com/openscriptures/morphhb/master/wlc/Ezra.xml"
+    }
+  ],
+  "generated_for": "Corpus retrieval work: real downloaded sources with checksums and licences. Corpus data files live outside source control (artifacts/corpora/ is gitignored); this manifest is the provenance record. Counts below come from the importer's parse report at download time (data preparation, not a quality measurement).",
+  "import_report": {
+    "aligned_english": 2165,
+    "by_language": {
+      "biblical_aramaic": 267,
+      "biblical_hebrew": 1903
+    },
+    "by_partition_pairs": {
+      "biblical_aramaic": {
+        "test": 196,
+        "train": 67,
+        "validation": 0
+      },
+      "biblical_hebrew": {
+        "test": 0,
+        "train": 906,
+        "validation": 996
+      }
+    },
+    "by_partition_verses": {
+      "biblical_aramaic": {
+        "test": 200,
+        "train": 67,
+        "validation": 0
+      },
+      "biblical_hebrew": {
+        "test": 0,
+        "train": 906,
+        "validation": 997
+      }
+    },
+    "duplicates_skipped": 0,
+    "note": "Parse counts recorded when the importer ran as data preparation after the Ezra import and book-group partition redesign (AHAIET-008). Ezra adds 280 verses (213 Hebrew, 67 Aramaic, all with aligned English). Consequence recorded honestly: the Hebrew profile now has no test-partition verses (Daniel Hebrew moved to validation), so the evaluation gate reports insufficient_test_data for Hebrew until a held-out Hebrew source is added; Aramaic has train 67 / test 196 pairs and no validation partition. Database import (--import-db) and all test suites are run by the developer; see docs/VERIFICATION.md.",
+    "tool": "backend: python -m app.corpus.import_morphhb",
+    "validation_errors": [],
+    "verses_parsed": 2170,
+    "verses_without_english": [
+      "Genesis 32:33",
+      "Daniel 3:31",
+      "Daniel 3:32",
+      "Daniel 3:33",
+      "Daniel 6:29"
+    ]
+  }
+}

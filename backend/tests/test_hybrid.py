@@ -320,7 +320,18 @@ def test_script_support_requires_matching_evaluation_record(tmp_path, monkeypatc
     (benchmarks / "htr-eval-paleo_hebrew.json").write_text(json.dumps(
         {"cer": 0.12, "wer": 0.3, "checkpoint_sha256": digest}), encoding="utf-8")
     row = script_profiles.profile_support(s, profile, False)
+    # AHAIET-025: a measured record alone is only experimentally
+    # evaluated — production support additionally requires the minimum
+    # independent test samples and a recorded dataset checksum.
+    assert row["status"] == "unsupported"
+    assert row["tier"] == "experimentally_evaluated"
+    (benchmarks / "htr-eval-paleo_hebrew.json").write_text(json.dumps(
+        {"cer": 0.12, "wer": 0.3, "checkpoint_sha256": digest,
+         "test_samples": 40, "dataset_sha256": "d" * 64,
+         "script_profile": "paleo_hebrew"}), encoding="utf-8")
+    row = script_profiles.profile_support(s, profile, False)
     assert row["status"] == "supported"
+    assert row["tier"] == "production_supported"
     assert row["engine"] == "kraken"
     assert row["evaluation"]["cer"] == 0.12
 
@@ -398,7 +409,8 @@ def test_retrieval_is_never_served_from_translation_cache(corpus_settings):
 def test_process_records_stage_timings(client):
     up = client.post("/api/uploads", files={"file": ("p.png", png_bytes(), "image/png")}).json()
     r = client.post("/api/process", json={"upload_id": up["id"]})
-    assert r.status_code == 200
+    # Contract change (AHAIET-009): asynchronous submission, 202.
+    assert r.status_code == 202
     assert "stage_timings_ms" in r.json()
     job = client.get(f"/api/jobs/{r.json()['job_id']}/result")
     assert "stage_timings_ms" in job.json()

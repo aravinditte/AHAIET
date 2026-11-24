@@ -31,22 +31,16 @@ def traineddata_available(lang: str, tessdata_prefix: Path | None) -> bool:
     # advance; the run itself will fail honestly if the data is missing.
     return True
 
-def run_tesseract_tsv(image_path: Path, cmd: str = "tesseract", lang: str = "heb",
-                      psm: int = 6, tessdata_prefix: Path | None = None) -> dict:
-    """Run Tesseract with TSV output. Returns words with real confidences,
-    text reconstructed in TSV reading order (block/par/line/word), the
-    mean word confidence, and the engine's raw stdout text."""
-    exe = tesseract_path(cmd)
-    if not exe:
-        raise UnavailableError("ocr_engine_unavailable",
-            "Tesseract OCR binary is not installed, so OCR cannot run.",
-            "Install Tesseract (https://github.com/tesseract-ocr/tesseract) and the Hebrew traineddata file (heb), then restart the backend. See docs/OCR.md and scripts/provision-ocr.ps1.")
-    proc = subprocess.run([exe, str(image_path), "stdout", "-l", lang, "--psm", str(psm), "tsv"],
-                          capture_output=True, text=True, timeout=180, env=_env(tessdata_prefix))
-    if proc.returncode != 0:
-        raise UnavailableError("ocr_failed", "Tesseract OCR failed.", (proc.stderr or "")[:500])
+def parse_tsv(tsv_text: str) -> dict:
+    """Parse Tesseract TSV output (the format produced by the `tsv`
+    config) into words with confidences, text reconstructed in TSV
+    reading order (block/par/line/word), and the mean word confidence.
+
+    This is a pure parser: it runs no OCR. Tests feed it a recorded
+    TSV fixture string — a parser fixture, not OCR output — and the
+    live path below feeds it the real binary's stdout."""
     words: list[dict] = []
-    reader = csv.DictReader(io.StringIO(proc.stdout), delimiter="\t", quoting=csv.QUOTE_NONE)
+    reader = csv.DictReader(io.StringIO(tsv_text), delimiter="\t", quoting=csv.QUOTE_NONE)
     for row in reader:
         if row.get("level") != "5":
             continue
@@ -80,8 +74,25 @@ def run_tesseract_tsv(image_path: Path, cmd: str = "tesseract", lang: str = "heb
     text = "\n".join(lines)
     confs = [w["conf"] for w in words if w["conf"] >= 0]
     mean_conf = round(sum(confs) / len(confs), 2) if confs else None
-    return {"text": text, "words": words, "mean_confidence": mean_conf,
-            "engine": "tesseract", "lang": lang, "psm": psm}
+    return {"text": text, "words": words, "mean_confidence": mean_conf}
+
+
+def run_tesseract_tsv(image_path: Path, cmd: str = "tesseract", lang: str = "heb",
+                      psm: int = 6, tessdata_prefix: Path | None = None) -> dict:
+    """Run Tesseract with TSV output. Returns words with real confidences,
+    text reconstructed in TSV reading order (block/par/line/word), the
+    mean word confidence, and the engine's raw stdout text."""
+    exe = tesseract_path(cmd)
+    if not exe:
+        raise UnavailableError("ocr_engine_unavailable",
+            "Tesseract OCR binary is not installed, so OCR cannot run.",
+            "Install Tesseract (https://github.com/tesseract-ocr/tesseract) and the Hebrew traineddata file (heb), then restart the backend. See docs/OCR.md and scripts/provision-ocr.ps1.")
+    proc = subprocess.run([exe, str(image_path), "stdout", "-l", lang, "--psm", str(psm), "tsv"],
+                          capture_output=True, text=True, timeout=180, env=_env(tessdata_prefix))
+    if proc.returncode != 0:
+        raise UnavailableError("ocr_failed", "Tesseract OCR failed.", (proc.stderr or "")[:500])
+    parsed = parse_tsv(proc.stdout)
+    return {**parsed, "engine": "tesseract", "lang": lang, "psm": psm}
 
 def run_tesseract(image_path: Path, cmd: str = "tesseract", lang: str = "heb",
                   psm: int = 6, tessdata_prefix: Path | None = None) -> str:

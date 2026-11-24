@@ -1,4 +1,6 @@
-# Training-only dependencies. These are NOT backend runtime requirements:
+# Training-only dependencies, upper-bounded like the backend's
+# (see backend/pyproject.toml and docs/SECURITY.md). These are NOT
+# backend runtime requirements:
 # the running application never imports them. Install into the training
 # environment (WSL2 for Moses work, or the backend venv if you prefer):
 #   pip install -r training/requirements.txt
@@ -6,14 +8,14 @@
 
 # Evaluation harness: SacreBLEU + chrF++ (a labelled pure-Python fallback
 # exists in training/evaluation/text_metrics.py when this is absent).
-sacrebleu>=2.4
+sacrebleu>=2.4,<3.0
 # Marian vocabulary training (joint SentencePiece model). The spm_train
 # binary from a Marian/SentencePiece install is an accepted alternative;
 # training/nmt/train_nmt.py uses whichever it finds and says which.
-sentencepiece>=0.2
+sentencepiece>=0.2,<0.3
 # Kraken historical-script OCR/HTR (training/ocr/train_kraken.py and the
 # backend Kraken adapter). Linux/WSL2-first. The backend declares the
 # same dependency as its `kraken` extra; install one or the other:
 #   pip install -r training/requirements.txt
 #   pip install -e "backend[kraken]"
-kraken>=4.3
+kraken>=4.3,<6.0

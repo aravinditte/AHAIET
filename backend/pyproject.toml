@@ -1,26 +1,41 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=68,<81"]
 build-backend = "setuptools.build_meta"
 [project]
 name = "ahaiet-backend"
 version = "0.1.0"
 description = "AHAIET backend - Ancient Hebrew & Ancient Aramaic Image-to-English Translator"
 requires-python = ">=3.11"
-dependencies = ["fastapi>=0.110", "uvicorn>=0.29", "pydantic>=2.6", "python-multipart>=0.0.9", "Pillow>=10.3", "numpy>=1.26"]
+# Versions are upper-bounded so a fresh install cannot silently pull a
+# new major release of a framework the code was not written against.
+# Raise a bound deliberately, in its own change, after checking the
+# release notes — see scripts/check-dependencies.ps1 / .sh and
+# docs/SECURITY.md (dependency hygiene).
+dependencies = ["fastapi>=0.110,<0.200", "uvicorn>=0.29,<1.0", "pydantic>=2.6,<3.0", "python-multipart>=0.0.9,<0.1", "Pillow>=10.3,<12.0", "numpy>=1.26,<3.0"]
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "httpx>=0.27"]
-opencv = ["opencv-python>=4.9"]
+dev = ["pytest>=8.0,<9.0", "httpx>=0.27,<0.29", "ruff>=0.6,<0.13"]
+opencv = ["opencv-python>=4.9,<5.0"]
 # Training/evaluation tooling only (dataset preparation is stdlib-only;
 # these serve the evaluation harness and Marian vocabulary training).
 # The backend runtime never imports them.
-training = ["sacrebleu>=2.4", "sentencepiece>=0.2"]
+training = ["sacrebleu>=2.4,<3.0", "sentencepiece>=0.2,<0.3"]
 # Kraken historical-script recognition (OCR/HTR). Optional and imported
 # defensively by the Kraken adapter; Linux/WSL2-first. Installing it
 # does NOT make any historical script supported — support additionally
 # requires a trained checkpoint and a measured evaluation record (see
 # docs/OCR.md).
-kraken = ["kraken>=4.3"]
+kraken = ["kraken>=4.3,<6.0"]
 [tool.setuptools.packages.find]
 include = ["app*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+  "model_required: tests that need a real provisioned model artifact or engine binary (Tesseract, Moses, Marian, Kraken checkpoint). Always-on CI deselects them with -m \"not model_required\"; the model-tests workflow runs them. Tests that can detect the missing prerequisite themselves should still self-skip with a reason inside the test.",
+]
+[tool.ruff]
+# Lint configuration for CI (see .github/workflows/ci.yml). Kept to the
+# pyflakes/pycodestyle-error core so the existing codebase style passes
+# without a reformatting pass; line length is not enforced (E501 off).
+line-length = 200
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]

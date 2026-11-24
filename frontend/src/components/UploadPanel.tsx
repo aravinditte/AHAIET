@@ -8,7 +8,8 @@ export function UploadPanel({ file, previewUrl, onFile, uploadMeta }: {
   return (
     <section aria-labelledby="upload-h" className="rounded border p-4">
       <h2 id="upload-h" className="font-semibold">Step 1 — Upload an image</h2>
-      <div onDragOver={(e) => { e.preventDefault(); setDrag(true); }} onDragLeave={() => setDrag(false)}
+      <div role="group" aria-label="Image upload: drop an image file here, or use the Choose an image file chooser"
+        onDragOver={(e) => { e.preventDefault(); setDrag(true); }} onDragLeave={() => setDrag(false)}
         onDrop={(e) => { e.preventDefault(); setDrag(false); const f = e.dataTransfer.files?.[0]; if (f) onFile(f); }}
         className={`mt-3 rounded border-2 border-dashed p-6 text-center ${drag ? "border-blue-500" : "border-gray-400"}`}>
         <label htmlFor="file-input" className="cursor-pointer underline">Choose an image</label>
@@ -21,7 +22,7 @@ export function UploadPanel({ file, previewUrl, onFile, uploadMeta }: {
       {previewUrl && (
         <figure className="mt-3">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={previewUrl} alt="Preview of the uploaded manuscript page" className="max-h-96 rounded border" />
+          <img src={previewUrl} alt="Preview of the uploaded manuscript page" data-testid="upload-preview" className="max-h-96 rounded border" />
           <figcaption className="text-sm">Actual preview of your uploaded image.</figcaption>
         </figure>
       )}

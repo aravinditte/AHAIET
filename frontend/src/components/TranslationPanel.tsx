@@ -16,7 +16,7 @@ export function TranslationPanel({ result }: { result: TranslationResult | null 
           shown empty below with their reason — nothing was invented for them.
         </p>
       )}
-      <div dir="ltr" lang="en" className="mt-2 min-h-16 whitespace-pre-wrap rounded border p-2">
+      <div dir="ltr" lang="en" data-testid="translation-output" aria-live="polite" className="mt-2 min-h-16 whitespace-pre-wrap rounded border p-2">
         {translation || <span className="text-sm opacity-70">No translation yet. A translation appears only for a verified corpus match or a real provisioned local model — never a dictionary gloss or example.</span>}
       </div>
       {result?.provenance && (
